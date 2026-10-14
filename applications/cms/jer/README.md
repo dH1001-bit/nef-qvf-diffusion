@@ -48,8 +48,21 @@ chain and needs a grid proxy; see "The exports" below.
 
 ## Running
 
-On the campaign export (cbe, any Python with numpy/scipy, e.g. the conda
-environment `hephy-ml-gpu-claude`):
+**The smallest real test** (seconds; this is the file to start with):
+
+    python3 scripts/fit_response.py /scratch-cbe/users/robert.schoefbeck/jer-unbinned/campaign_UL18_absy0-0.5_ps1000.npz \
+        --absy 0 0.5 --genpt 97 3500 --edges 97 140 200 280 400 550 750 1000 1400 2000 3500 --bin 300 500 --out fig/ps1000
+
+6 MB, 135 k rows (|y| < 0.5, prescale 1000, n_eff 9 k), 28 k jets in the
+300-500 GeV bin; copies to a laptop.  Every step of the chain runs on it in
+under a minute, and the 300-500 GeV widths come out 0.0619 +- 0.0009 (core)
+and 0.0702 +- 0.0006 (full range), within errors of the full-statistics
+values below.  Sizes in between are one `reduce_rows.py --prescale` away
+(`campaign_UL18_absy0-0.5_ps10.npz`, 558 MB, is the same selection at
+prescale 10; it fits in about an hour on a cluster node).
+
+On the campaign export itself (cbe, any Python with numpy/scipy, e.g. the
+conda environment `hephy-ml-gpu-claude`):
 
     python3 scripts/reduce_rows.py '/scratch-cbe/users/robert.schoefbeck/Jets/jer_export_UL18/jer_UL18_HT*.npz' \
         my_UL18_absy0-0.5_ps10.npz --absy 0 0.5 --prescale 10
@@ -204,13 +217,15 @@ generator jets whose reconstructed partner is rejected by the jet ID or the
 veto map (the gen table measures the distance to the nearest *accepted* jet).
 That population is removed, not smeared, and is not part of the response.
 
-**Cross-check on the campaign export** (|y| < 0.5, prescale 10, pt_gen > 97 GeV;
-job 3442538, log `fit_campaign_absy0-0.5_ps10.log`, figures
-`fig_campaign_absy0-0.5_ps10/` on scratch): pending at the time of writing.
+**Cross-check on the campaign export** (|y| < 0.5, pt_gen > 97 GeV).
 Prediction, recorded first: the 300-500 GeV core width 0.0622-0.0624, the
 full-range width 0.0714-0.0715; the two exports differ only by the event veto,
-which removes soft high-weight events, so any shift should sit in the lowest
-pt bins.
+which removes soft high-weight events (6% of the summed event weight for
+0.5-2.6% of the events), so any shift should sit in the lowest pt bins.
+Prescale 1000 (the test file above, 45 s): core 0.0619 +- 0.0009, full range
+0.0702 +- 0.0006, both within two standard errors of the prediction.  The
+prescale-10 run (job 3442538, log `fit_campaign_absy0-0.5_ps10.log`,
+figures `fig_campaign_absy0-0.5_ps10/` on scratch) is the precise version.
 
 ## What the toy shows
 
