@@ -9,7 +9,7 @@ or from another script:
     from applications.cms.www import publish
     publish(["plot.png", "plot.pdf"], "quicklook")
 
-Files land under /eos/user/s/schoef/www/nef-qvf-diffusion/TT2l-study/<subdir>
+Files land under /eos/user/s/schoef/www/nef-qvf-diffusion/<base>/<subdir> (base: TT2l-study, or --base JER)
 and are served at
 https://schoef.web.cern.ch/schoef/nef-qvf-diffusion/TT2l-study/<subdir>/;
 an index.php is copied alongside so the directory is browsable.
@@ -64,8 +64,12 @@ def publish(paths, subdir: str) -> list[str]:
 
 def main() -> None:
     if len(sys.argv) < 3:
-        sys.exit("usage: python -m applications.cms.www <subdir> <files...>")
-    publish(sys.argv[2:], sys.argv[1])
+        sys.exit("usage: python -m applications.cms.www [--base JER] <subdir> <files...>")
+    args = sys.argv[1:]
+    base = "TT2l-study"
+    if args[0] == "--base":
+        base, args = args[1], args[2:]
+    publish(args[1:], args[0], base=base)
 
 
 if __name__ == "__main__":
