@@ -54,7 +54,11 @@ chain and needs a grid proxy; see "The exports" below.
         --absy 0 0.5 --genpt 97 3500 --edges 97 140 200 280 400 550 750 1000 1400 2000 3500 --bin 300 500 --out fig/ps1000
 
 6 MB, 135 k rows (|y| < 0.5, prescale 1000, n_eff 9 k), 28 k jets in the
-300-500 GeV bin; copies to a laptop.  Every step of the chain runs on it in
+300-500 GeV bin.  The file is also on the web, so the test runs anywhere
+with numpy and scipy (`examples/UL18-campaign-ps1000/` has the output):
+
+    https://schoef.web.cern.ch/schoef/nef-qvf-diffusion/JER/UL18-campaign-ps1000/campaign_UL18_absy0-0.5_ps1000.npz
+  Every step of the chain runs on it in
 under a minute, and the 300-500 GeV widths come out 0.0619 +- 0.0009 (core)
 and 0.0702 +- 0.0006 (full range), within errors of the full-statistics
 values below.  Sizes in between are one `reduce_rows.py --prescale` away
@@ -222,8 +226,10 @@ Prediction, recorded first: the 300-500 GeV core width 0.0622-0.0624, the
 full-range width 0.0714-0.0715; the two exports differ only by the event veto,
 which removes soft high-weight events (6% of the summed event weight for
 0.5-2.6% of the events), so any shift should sit in the lowest pt bins.
-Prescale 1000 (the test file above, 45 s): core 0.0619 +- 0.0009, full range
-0.0702 +- 0.0006, both within two standard errors of the prediction.  The
+Prescale 1000 (the test file above, 45 s; `examples/UL18-campaign-ps1000/`,
+published at https://schoef.web.cern.ch/schoef/nef-qvf-diffusion/JER/UL18-campaign-ps1000/):
+core 0.0619 +- 0.0009, full range 0.0702 +- 0.0006, both within two standard
+errors of the prediction.  The
 prescale-10 run (job 3442538, log `fit_campaign_absy0-0.5_ps10.log`,
 figures `fig_campaign_absy0-0.5_ps10/` on scratch) is the precise version.
 

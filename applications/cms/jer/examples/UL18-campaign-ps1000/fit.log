@@ -1,0 +1,46 @@
+read 1 file(s): 135463 pairs, 0 gen jets, 380215173 events, sum w(events) 1.99381e+08
+selected 135457 pairs, n_eff 9102 (|y| in [0,0.5), genpt in [97,3500), dR < 0.4)
+
+[bin 300 <= genpt < 500, 28291 jets, n_eff 15558]
+Gaussian, full range  : mu = 0.9978 +- 0.0006   sigma = 0.0702 +- 0.0006
+Gaussian, +-1.5s core : mu = 1.0012 +- 0.0007   sigma = 0.0619 +- 0.0009  (5 iterations)
+
+[per bin]   pt      n    n_eff   sigma(full)          sigma(core)
+    112.2   31161    5597   0.1172 +- 0.0024   0.0984 +- 0.0024
+    161.3   26456    9817   0.0994 +- 0.0012   0.0877 +- 0.0017
+    228.8   26479    6261   0.0891 +- 0.0019   0.0758 +- 0.0018
+    321.6   24921   13976   0.0726 +- 0.0006   0.0645 +- 0.0010
+    453.5   11428    9311   0.0624 +- 0.0007   0.0555 +- 0.0011
+    620.6    6202    3595   0.0566 +- 0.0010   0.0525 +- 0.0016
+    837.1    5817    3994   0.0517 +- 0.0009   0.0459 +- 0.0013
+   1126.1    2646    2563   0.0489 +- 0.0015   0.0417 +- 0.0015
+   1566.9     319     319   0.0458 +- 0.0022   0.0395 +- 0.0040
+   2248.5      28      28   0.0579 +- 0.0176   0.0465 +- 0.0186
+
+[binned NSC, full-range widths, chi2/ndf 11.8/7]
+N    =      5.06321 +- 1.33      
+S    =       1.1136 +- 0.0432    
+C    =    0.0340916 +- 0.00202   
+rows 10   sum w 10   n_eff 10.0   -logL 5.91047   converged
+
+[binned NSC, core widths, chi2/ndf 5.2/7]
+N    =     -3.60584 +- 1.93      
+S    =      1.07647 +- 0.0503    
+C    =    0.0270966 +- 0.00289   
+rows 10   sum w 10   n_eff 10.0   -logL 2.58824   converged
+
+[unbinned NSC, full range]
+mu   =     0.997329 +- 0.000313  
+N    =   0.00394922 +- 0.0843    
+S    =      1.20041 +- 0.0147    
+C    =    0.0311125 +- 0.00141   
+rows 135457   sum w 135457   n_eff 53209.0   -logL -142846   converged
+
+[unbinned NSC, +-1.5 sigma(pt) window, 4 iterations]
+mu   =      1.00072 +- 0.000399  
+N    =     -4.60147 +- 1.65      
+S    =      1.10124 +- 0.0542    
+C    =    0.0267761 +- 0.00313   
+rows 113840   sum w 114198   n_eff 45275.5   -logL -178217   converged
+
+figures and results.json in /scratch-cbe/users/robert.schoefbeck/jer-unbinned/fig_campaign_absy0-0.5_ps1000
