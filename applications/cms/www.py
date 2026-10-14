@@ -37,9 +37,11 @@ def _environment() -> dict:
     return environment
 
 
-def publish(paths, subdir: str) -> list[str]:
-    """Copy the files one by one to TT2l-study/<subdir>; return the URLs."""
-
+def publish(paths, subdir: str, base: str = "TT2l-study") -> list[str]:
+    """Copy the files one by one to nef-qvf-diffusion/<base>/<subdir>; return
+    the URLs.  ``base`` defaults to the ttbar study; the JER study uses "JER"."""
+    BASE = f"/eos/user/s/schoef/www/nef-qvf-diffusion/{base}"
+    URL = f"https://schoef.web.cern.ch/schoef/nef-qvf-diffusion/{base}"
     destination = f"{BASE}/{subdir}" if subdir else BASE
     environment = _environment()
     subprocess.run(["xrdfs", EOS, "mkdir", "-p", destination], check=True, env=environment)
