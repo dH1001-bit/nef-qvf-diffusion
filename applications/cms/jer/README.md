@@ -69,14 +69,14 @@ prescale 10; it fits in about an hour on a cluster node).
 **From the small test to full statistics.**  The same command runs at
 every size; only the input changes.  The per-bin Gaussian fits are closed
 form and cost nothing, the global unbinned NSC fit uses numerical gradients
-and scales linearly with the rows: about 5 minutes and 0.6 GB per million
-rows on a cbe node.  So:
+and scales linearly with the rows: about 6 minutes and 0.3 GB per million
+rows on a cbe node (13.5 M rows: 80 min, 4.1 GB).  So:
 
 | input (|y| < 0.5)                      | rows   | size   | fit            | where          |
 |----------------------------------------|--------|--------|----------------|----------------|
 | `campaign_UL18_absy0-0.5_ps1000.npz`   | 135 k  | 6 MB   | 45 s           | laptop         |
-| `campaign_UL18_absy0-0.5_ps10.npz`     | 13.5 M | 558 MB | about an hour, 10 GB | Slurm job |
-| campaign export, no prescale           | 135 M  | 5.6 GB | about 10 h, 80 GB | not yet practical |
+| `campaign_UL18_absy0-0.5_ps10.npz`     | 13.5 M | 558 MB | 80 min, 4 GB   | Slurm job      |
+| campaign export, no prescale           | 135 M  | 5.6 GB | about 13 h, 40 GB | not yet practical |
 
 Anything beyond the laptop goes through `scripts/sbatch_fit.sh`, submitted
 from this directory (it activates the conda environment and writes
@@ -259,9 +259,28 @@ which removes soft high-weight events (6% of the summed event weight for
 Prescale 1000 (the test file above, 45 s; `examples/UL18-campaign-ps1000/`,
 published at https://schoef.web.cern.ch/schoef/nef-qvf-diffusion/JER/UL18-campaign-ps1000/):
 core 0.0619 +- 0.0009, full range 0.0702 +- 0.0006, both within two standard
-errors of the prediction.  The
-prescale-10 run (job 3442538, log `fit_campaign_absy0-0.5_ps10.log`,
-figures `fig_campaign_absy0-0.5_ps10/` on scratch) is the precise version.
+errors of the prediction.  Prescale 10 (job 3442538, 80 min; `fig_campaign_absy0-0.5_ps10/` on
+scratch, published at
+https://schoef.web.cern.ch/schoef/nef-qvf-diffusion/JER/UL18-campaign-ps10/):
+core 0.0623 +- 0.0001, as predicted; full range **0.0703 +- 0.0001**, not the
+predicted 0.0714.  The prediction was wrong about where the veto acts.  Bin
+by bin, the core widths of the two exports agree to 0.0002 over the whole
+range, while the full-range widths separate with pt:
+
+    pt [GeV]      322     453     620     838    1127    1571    2240
+    this export  0.0741  0.0658  0.0608  0.0574  0.0556  0.0540  0.0543
+    campaign     0.0732  0.0636  0.0574  0.0526  0.0494  0.0481  0.0464
+    core, both   0.0649  0.0569  0.0509  0.0464  0.0430  0.0403  0.0386
+
+The vetoed events are not soft; they are events in which a reconstructed jet
+is far harder than the generator-level event (the "over-weighted
+reconstruction artefacts" of the campaign's cleaning), so they populate the
+high-side tail at high pt with the large weights of the low-H_T slices.  The
+full-range width at 1 TeV depends on that veto at the 12% level, the core
+width not at all.  This is the cleanest demonstration so far that the
+full-range Gaussian width measures the tails and their definition, and that a
+tail model is needed before any full-range number means anything.  All
+further work uses the campaign export, where the veto is applied.
 
 ## What the toy shows
 
