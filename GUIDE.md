@@ -402,6 +402,17 @@ python -m applications.d_site_diffusion --family poisson --sites 8 --chi 3
 
 ---
 
+### 3.8 `cms/` — the CMS studies
+
+`applications/cms/` holds the law-level ttbar study (`quicklook_nj_ht`,
+`law_projections`, `ht_frames`, `pair_bond`, `pair_moving_frame`, with
+registered predictions and outcomes in the docstrings, published through
+`www.py`) and `cms/jer/`, the unbinned jet-energy-resolution fit: a
+numpy/scipy fit package (`jerfit`) on per-jet rows, with the single
+Darwin-dependent export script isolated in `cms/jer/export/`.  Its README is
+the starting point for the JER student; `cms/jer/examples/UL18-student/`
+is a complete worked fit.
+
 ## 4. The toy model: `two_state_hmm`
 
 A symmetric two-state Markov chain supplies the spatial dependence; the emissions
