@@ -27,11 +27,33 @@ else in this repository imports ROOT.
 
     export/export_response.py   PyROOT + Darwin.  One M4 file -> one npz.
     export/run_export.sh        container wrapper (LCG view, Darwin libs)
+    export/el9.sh               the EL9 container launcher (copied from campaign 0070)
     export/submit_export.sh     Slurm array, one task per input file
     jerfit/                     the fit: numpy + scipy
     scripts/fit_response.py     command line: table, binned reference, unbinned fits, figures
     scripts/make_toy.py         synthetic rows in the same schema (develop without the cluster)
     tests/test_closure.py       closure of every fit on the synthetic sample
+
+### What the export needs, and where EOS enters
+
+Nothing from the campaign repository.  The container launcher is here, and
+the Darwin/Core libraries (`libDarwin.so`, `libCoreObjects.so`, `.pcm`,
+`.rootmap`) are taken from the input file's own directory, where the campaign
+copies them next to the data.  Beyond that: `/cvmfs` (the CMS EL9 image and
+the LCG view), read access to the M4 stage on `/scratch-cbe`, and **a grid
+proxy** (`~/.private/.proxy`, or `X509_USER_PROXY`).
+
+The proxy is needed because of where the generator jets live.  Every stage
+file on scratch holds only its own branch and reaches the others through a
+chain of friend trees: M4 -> M3 -> M2 (`genEvent`) -> M1, all on scratch, and
+M1's friend for `genJets` is the raw CRAB output on EOS
+(`root://eos.grid.vbc.ac.at//eos/vbc/experiments/cms/store/user/schoef/FullRun2_AK8/...`,
+99 GB for one H_T slice, 5 TB in all).  The generator jets exist nowhere else,
+so the export is the one pass that reads EOS -- without the proxy the friend
+silently fails to open and the tree has no `genJets`.  After the export
+nothing touches EOS or Darwin: the rows on scratch are the input to
+everything else.  A student without a grid certificate starts from the
+exported rows (below) and never runs the export.
 
 ## Running
 
