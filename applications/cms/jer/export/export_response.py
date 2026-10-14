@@ -16,6 +16,10 @@ of schoef/0070):
   * genEvent.Weight()  -- a cross section in pb (applyMClumi has multiplied by
     sigma/sum w), so the H_T slices add without any further factor; at M4 it
     does NOT contain the pile-up weight;
+  * recEvent.Weight()  -- 1, or 0 for an event VETOED by applyPUcleaning (an
+    over-weighted reconstruction artefact; 0.5-2.6% of events, soft and
+    high-weight).  Vetoed events are skipped and counted (n_events_vetoed).
+    Files exported before 2026-10-14 evening lack this factor;
   * jet.Weight() == 0  -- the jet is REJECTED (jet ID, veto map); never written;
   * jet.CorrPt(), CorrP4() -- JES-corrected (p4 * scales[0]);
     jet.p4.Rapidity()      -- Darwin's Rapidity() uses the RAW p4; kept so;
@@ -78,13 +82,17 @@ def main():
                                     "w_event", "dr", "dr2")}
     gen = {k: array("d") for k in ("g_pt", "g_y", "g_dr")}
     sumw = 0.0
-    n_read = n_jets_acc = n_jets_rej = 0
+    n_read = n_veto = n_jets_acc = n_jets_rej = 0
     t0 = time.time()
     for i in range(0, n, a.prescale):
         t.GetEntry(i)
-        wevt = t.genEvent.Weight() * a.prescale
-        sumw += wevt
         n_read += 1
+        wrec = t.recEvent.Weight()            # strictly 1 or 0 (0: vetoed by applyPUcleaning)
+        if wrec == 0.:
+            n_veto += 1
+            continue
+        wevt = t.genEvent.Weight() * wrec * a.prescale
+        sumw += wevt
 
         gens = [(gj.p4.Pt(), gj.p4.Rapidity(), gj.p4) for gj in t.genJets
                 if gj.p4.Pt() >= a.genpt_min]
@@ -129,15 +137,15 @@ def main():
     out.update({k: np.frombuffer(v, np.float64).astype(np.float32) for k, v in gen.items()})
     out.update(era=meta["era"], slice=meta["slice"], generator=meta["generator"],
                sample=meta["sample"], source=meta["source"],
-               n_events=n_read, n_events_file=n_all, sumw_events=sumw,
+               n_events=n_read, n_events_vetoed=n_veto, n_events_file=n_all, sumw_events=sumw,
                n_jets_accepted=n_jets_acc, n_jets_rejected=n_jets_rej,
                genpt_min=a.genpt_min, max_dr=a.max_dr, prescale=a.prescale)
     os.makedirs(a.out, exist_ok=True)
     stem = "%s_%s" % (meta["sample"], os.path.splitext(os.path.basename(a.input))[0])
     path = os.path.join(a.out, stem + ".npz")
     np.savez_compressed(path, **out)
-    print("events %d  sum w %.6g pb  jets accepted %d rejected %d  pairs %d  gen jets %d"
-          % (n_read, sumw, n_jets_acc, n_jets_rej, len(out["response"]), len(out["g_pt"])))
+    print("events %d (%d vetoed)  sum w %.6g pb  jets accepted %d rejected %d  pairs %d  gen jets %d"
+          % (n_read, n_veto, sumw, n_jets_acc, n_jets_rej, len(out["response"]), len(out["g_pt"])))
     print("wrote", path, "in %.0f s" % (time.time() - t0))
 
 

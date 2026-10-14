@@ -22,6 +22,15 @@ generator-jet table for the matching efficiency
 Rejected jets (``jet.Weight() == 0``) are never written.  The export keeps
 every pair up to a loose radius so the matching radius is an analysis cut
 (``select(..., max_dr=...)``), not an export choice.
+
+The campaign's own flat export (0070 ``export_jer_rows.py``, files
+``jer_<era>_HT<slice>_<k>.npz``) is read by the same ``load``: its columns
+``genpt geneta geny recpt receta recy dR area rho trpu nVtx weight`` are taken
+over, ``dR`` is renamed ``dr``, ``response = recpt/genpt`` is computed, and
+the scalars ``n_events_read`` / ``sum_weights`` become ``n_events`` /
+``sumw_events``.  It has no ``dr2`` (so ``isolate_dr2`` is unavailable) and no
+generator-jet table (so no matching efficiency); it carries pile-up columns
+that this export does not.
 """
 from __future__ import annotations
 import glob
@@ -79,23 +88,32 @@ class Rows:
         np.savez_compressed(path, **out)
 
 
+CAMPAIGN_COLUMNS = {"dR": "dr"}
+CAMPAIGN_META = {"n_events_read": "n_events", "sum_weights": "sumw_events"}
+
+
 def load(path) -> Rows:
-    """Load one npz written by the export or by Rows.save."""
+    """Load one npz written by the export, by Rows.save, or by the campaign's
+    flat export (recognised by its ``dR`` column; see the module docstring)."""
     cols, gen, meta = {}, {}, {}
     with np.load(path, allow_pickle=False) as f:
-        if "response" not in f.files:
-            raise ValueError("%s has no 'response' column" % path)
-        n = len(f["response"])
+        campaign = "response" not in f.files and "dR" in f.files
+        if "response" not in f.files and not campaign:
+            raise ValueError("%s has neither a 'response' nor a 'dR' column" % path)
+        n = len(f["recpt" if campaign else "response"])
         for k in f.files:
             v = f[k]
             if k.startswith("g_"):
                 gen[k] = v
             elif v.ndim == 0:
-                meta[k] = v[()]
+                meta[CAMPAIGN_META.get(k, k) if campaign else k] = v[()]
             elif v.ndim == 1 and len(v) == n:
-                cols[k] = v              # the schema columns plus any extra per-row column
+                cols[CAMPAIGN_COLUMNS.get(k, k) if campaign else k] = v   # schema columns plus any extra per-row column
             else:
                 meta[k] = v
+    if campaign:
+        cols["response"] = cols["recpt"].astype(np.float64) / cols["genpt"].astype(np.float64)
+        meta.setdefault("source", "campaign flat export (0070 export_jer_rows.py)")
     gen = gen or None
     return Rows(cols, gen=gen, meta=meta)
 
@@ -163,6 +181,8 @@ def select(rows: Rows, genpt=(None, None), absy=(None, None), max_dr=0.4,
     if lo is not None: m &= rows.response >= lo
     if hi is not None: m &= rows.response < hi
     if isolate_dr2 is not None:
+        if "dr2" not in rows.columns:
+            raise ValueError("isolate_dr2 needs the 'dr2' column, which the campaign's flat export does not carry")
         m &= rows.dr2 > isolate_dr2
     return rows[m]
 
