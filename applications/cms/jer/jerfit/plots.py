@@ -6,6 +6,13 @@ from .width import nsc_sigma
 from .gaussian import log_window_mass
 
 
+
+def _save(fig, path):
+    """Save the figure; a .pdf path also gets a .png beside it (for web indexes)."""
+    fig.savefig(path)
+    if path.endswith(".pdf"):
+        fig.savefig(path[:-4] + ".png", dpi=150)
+
 def _mpl():
     import matplotlib
     matplotlib.use("Agg")
@@ -37,7 +44,7 @@ def response_bin(rows, full, core, title="", path=None, bins=100, rng=(0.0, 2.0)
     ax.set_xlabel(r"$p_T^{\rm rec}/p_T^{\rm gen}$"); ax.set_ylabel("weighted jets / bin")
     ax.set_title(title, fontsize=10); ax.legend(loc="upper left", fontsize=9, frameon=False)
     fig.tight_layout()
-    if path: fig.savefig(path)
+    if path: _save(fig, path)
     return fig
 
 
@@ -55,7 +62,7 @@ def sigma_vs_pt(points, curves, title="", path=None):
     ax.set_xlabel(r"$p_T^{\rm gen}$ [GeV]"); ax.set_ylabel(r"$\sigma(p_T^{\rm rec}/p_T^{\rm gen})$")
     ax.set_title(title, fontsize=10); ax.legend(fontsize=9, frameon=False)
     fig.tight_layout()
-    if path: fig.savefig(path)
+    if path: _save(fig, path)
     return fig
 
 
@@ -81,7 +88,7 @@ def pull_vs_pt(rows, theta, pt_edges, title="", path=None, k=None):
     ax.set_xscale("log"); ax.set_xlabel(r"$p_T^{\rm gen}$ [GeV]"); ax.set_ylabel(r"$z=(r-\mu)/\sigma(p_T)$")
     ax.set_title(title, fontsize=10); ax.legend(frameon=False)
     fig.tight_layout()
-    if path: fig.savefig(path)
+    if path: _save(fig, path)
     return fig
 
 
@@ -93,5 +100,5 @@ def efficiency(centres, eff, n, title="", path=None):
     ax.set_xscale("log"); ax.set_ylim(0, 1.05)
     ax.set_xlabel(r"$p_T^{\rm gen}$ [GeV]"); ax.set_ylabel("matching efficiency")
     ax.set_title(title, fontsize=10); fig.tight_layout()
-    if path: fig.savefig(path)
+    if path: _save(fig, path)
     return fig
