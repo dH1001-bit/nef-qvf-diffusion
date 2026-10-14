@@ -409,9 +409,10 @@ python -m applications.d_site_diffusion --family poisson --sites 8 --chi 3
 registered predictions and outcomes in the docstrings, published through
 `www.py`) and `cms/jer/`, the unbinned jet-energy-resolution fit: a
 numpy/scipy fit package (`jerfit`) on per-jet rows, with the single
-Darwin-dependent export script isolated in `cms/jer/export/`.  Its README is
-the starting point for the JER student; `cms/jer/examples/UL18-student/`
-is a complete worked fit.
+Darwin-dependent export script isolated in `cms/jer/export/`.  The student
+starts from the campaign's flat numpy arrays on cbe scratch (numpy only, no
+EOS); the export here extends them.  Its README is the starting point for the
+JER student; `cms/jer/examples/UL18-student/` is a complete worked fit.
 
 ## 4. The toy model: `two_state_hmm`
 

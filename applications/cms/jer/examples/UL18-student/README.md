@@ -1,6 +1,9 @@
 # Example: UL18 MadGraph, prescaled student set, |y| < 0.5
 
-Input (not in git, 745 MB):
+Input (not in git, 745 MB; made with the export in `export/` before it
+applied the pile-up-cleaning event veto, so it contains the 0.5-2.6% of
+events that `applyPUcleaning` vetoes.  The campaign's own flat export, the
+student's starting point, applies the veto; see the top-level README):
 
     cbe:    /scratch-cbe/users/robert.schoefbeck/jer-unbinned/UL18_student_ps50.npz
     laptop: ~/CMS/jer-unbinned/out/UL18/UL18_student_ps50.npz (or wherever you copy it)
