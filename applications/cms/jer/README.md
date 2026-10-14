@@ -43,6 +43,7 @@ chain and needs a grid proxy; see "The exports" below.
     jerfit/                     the fit: numpy + scipy
     scripts/fit_response.py     command line: table, binned reference, unbinned fits, figures
     scripts/reduce_rows.py      cuts and prescale, file by file, into one fit-sized npz
+    scripts/sbatch_fit.sh       the same fit as a Slurm job (anything above laptop size)
     scripts/make_toy.py         synthetic rows in the same schema (develop without the cluster)
     tests/test_closure.py       closure of every fit on the synthetic sample
 
@@ -64,6 +65,35 @@ and 0.0702 +- 0.0006 (full range), within errors of the full-statistics
 values below.  Sizes in between are one `reduce_rows.py --prescale` away
 (`campaign_UL18_absy0-0.5_ps10.npz`, 558 MB, is the same selection at
 prescale 10; it fits in about an hour on a cluster node).
+
+**From the small test to full statistics.**  The same command runs at
+every size; only the input changes.  The per-bin Gaussian fits are closed
+form and cost nothing, the global unbinned NSC fit uses numerical gradients
+and scales linearly with the rows: about 5 minutes and 0.6 GB per million
+rows on a cbe node.  So:
+
+| input (|y| < 0.5)                      | rows   | size   | fit            | where          |
+|----------------------------------------|--------|--------|----------------|----------------|
+| `campaign_UL18_absy0-0.5_ps1000.npz`   | 135 k  | 6 MB   | 45 s           | laptop         |
+| `campaign_UL18_absy0-0.5_ps10.npz`     | 13.5 M | 558 MB | about an hour, 10 GB | Slurm job |
+| campaign export, no prescale           | 135 M  | 5.6 GB | about 10 h, 80 GB | not yet practical |
+
+Anything beyond the laptop goes through `scripts/sbatch_fit.sh`, submitted
+from this directory (it activates the conda environment and writes
+`jer-fit-<jobid>.log` here):
+
+    sbatch scripts/sbatch_fit.sh /scratch-cbe/users/robert.schoefbeck/jer-unbinned/campaign_UL18_absy0-0.5_ps10.npz fig/ps10 \
+        --absy 0 0.5 --genpt 97 3500 --edges 97 140 200 280 400 550 750 1000 1400 2000 3500 --bin 300 500
+    sbatch --mem=48G scripts/sbatch_fit.sh <a bigger file> fig/big ...
+
+Prescale 10 is full statistics for every practical purpose: its errors are
+sqrt(10) times the full-sample ones (0.0001 instead of 0.00003 on the
+300-500 GeV core width).  The unprescaled fit exceeds the 8 h limit; what
+makes it affordable is an analytic gradient in `jerfit/mle.py`, not a
+bigger node, and that is the next step on the fitter if full statistics
+are ever needed.  Any size in between is one `reduce_rows.py --prescale`
+call on the prescale-10 file (the prescale multiplies the weights, so sums
+of weights are preserved in expectation and the files remain comparable).
 
 On the campaign export itself (cbe, any Python with numpy/scipy, e.g. the
 conda environment `hephy-ml-gpu-claude`):
