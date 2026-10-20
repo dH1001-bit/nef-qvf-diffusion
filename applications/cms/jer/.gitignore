@@ -1,4 +1,3 @@
-__pycache__/
-*.npz
+fig/
 out/
-logs/
+jer-fit-*.log

@@ -45,6 +45,7 @@ chain and needs a grid proxy; see "The exports" below.
     scripts/reduce_rows.py      cuts and prescale, file by file, into one fit-sized npz
     scripts/sbatch_fit.sh       the same fit as a Slurm job (anything above laptop size)
     scripts/make_toy.py         synthetic rows in the same schema (develop without the cluster)
+    scripts/hermite_demo.py     the Hermite OPS and the Born model, step by step; the student's starting point for the tail fit
     tests/test_closure.py       closure of every fit on the synthetic sample
 
 ## Running
@@ -290,6 +291,35 @@ two to three orders of magnitude), the full-range Gaussian returns C = 0.067
 against a truth of 0.040 while the +-1.5 sigma core fit returns 0.040.  The
 core width is not where the difficulty is; the tails are, and a tail-including
 model is what the next step has to supply.
+
+## The non-Gaussian response: the Hermite demo and the student's task
+
+`scripts/hermite_demo.py` is a walk-through, meant to be read line by line
+(everything is in the module scope, so run it with `ipython -i` and inspect
+the variables afterwards):
+
+    . /software/f2022/software/mamba/24.3.0-0/etc/profile.d/conda.sh && conda activate hephy-ml-gpu-claude
+    cd ~/ML/nef-qvf-diffusion/applications/cms/jer
+    ipython -i scripts/hermite_demo.py
+
+It shows, with a numerical check at every step: the orthonormal Hermite basis
+of N(mu, sigma^2) as `nefqvf` evaluates it (`Normal.basis`, `basis_dot`,
+`jacobi_coefficients`); the Born model p = p_ref h^2 with h = sum c_n phi_n,
+whose normalisation is the unit sphere ||c|| = 1 and whose moments
+E_p[phi_k] = c^T Phi_k c come from the exact product tensor
+(`product_matrices`, `ratio_coefficients`); a density with a low-side tail
+built from degrees 3 and 4, a sample from it, and the weighted log-likelihood
+of the model evaluated at the truth and at the Gaussian point; and finally the
+JER rows of the 300-500 GeV bin, where the weighted moments <phi_3> and
+<phi_4> of the response are measured at 4.5 and 3.7 standard errors from the
+Gaussian's zero.  Those moments are what an amplitude has to reproduce.
+
+The fit is deliberately not in the demo.  The task, as the demo prints it:
+fit the Born model with active degrees {3, 4} and then {3, ..., 6} to the rows
+by maximising the weighted likelihood on the sphere, with sandwich errors;
+check the Gaussian limit, the moments pull by pull, the likelihood gain
+against the number of degrees, and the histogram on a log scale; then let mu
+and sigma follow the NSC form through the model interface below.
 
 ## Plugging in a different response model
 
