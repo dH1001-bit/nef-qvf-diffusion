@@ -281,7 +281,6 @@ try:
     ax.semilogy(z, p_ref * sigma, label=r"reference $N(\mu,\sigma^2)$")
     ax.semilogy(z, p_true * sigma, label=r"$p_{\rm ref}\,h^2$, $c_3=%.2f$, $c_4=%.2f$" % (c_true[3], c_true[4]))
     hist, edges = np.histogram((r_toy - mu) / sigma, bins=80, range=(-5, 5), weights=w_toy, density=True)
-    ax.semilogy(z, p_approx * sigma, label=r"approximated")
     ax.step(edges[:-1], hist, where="post", lw=0.8, color="k", label="sample (weighted)")
     ax.set_ylim(1e-6, 1); ax.set_xlabel(r"$z$"); ax.legend(); ax.set_title("a low-side tail from degrees 3 and 4")
     fig.tight_layout(); fig.savefig(os.path.join(fig_dir, "tail.png"), dpi=150)
