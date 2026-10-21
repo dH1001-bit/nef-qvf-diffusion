@@ -189,7 +189,11 @@ print("k    R_k(c_true)   <phi_k>_w +- err      pull")
 for k in range(1, 9):
     print("%-4d %10.4f   %10.4f +- %.4f  %6.1f" % (k, R_true[k], m_toy[k], e_toy[k], (m_toy[k] - R_true[k]) / e_toy[k]))
 
-p_approx = p_ref*Normal.basis_dot(x, m_toy, ref)
+p_approx = []
+
+for i in range(K):
+    r_approx, e_approx = weighted_moments(r_toy, w_toy, ref, 2*i)
+    p_approx.append(p_ref*Normal.basis_dot(x, r_approx, ref))
 
 # The weighted log-likelihood of the Born model.  Per row:
 #     log p(r_i) = log N(r_i; mu, sigma) + 2 log |h(r_i)|,      h = basis_dot(r_i, c/||c||)
@@ -281,6 +285,17 @@ try:
     ax.step(edges[:-1], hist, where="post", lw=0.8, color="k", label="sample (weighted)")
     ax.set_ylim(1e-6, 1); ax.set_xlabel(r"$z$"); ax.legend(); ax.set_title("a low-side tail from degrees 3 and 4")
     fig.tight_layout(); fig.savefig(os.path.join(fig_dir, "tail.png"), dpi=150)
+
+    for i in range(K):
+        fig, ax = plt.subplots(figsize=(6, 4))
+        ax.semilogy(z, p_ref * sigma, label=r"reference $N(\mu,\sigma^2)$")
+        ax.semilogy(z, p_true * sigma, label=r"$p_{\rm ref}\,h^2$, $c_3=%.2f$, $c_4=%.2f$" % (c_true[3], c_true[4]))
+        hist, edges = np.histogram((r_toy - mu) / sigma, bins=80, range=(-5, 5), weights=w_toy, density=True)
+        ax.semilogy(z, p_approx[i] * sigma, label=r"approximated with Hermite of %i th degree" % i)
+        ax.step(edges[:-1], hist, where="post", lw=0.8, color="k", label="sample (weighted)")
+        ax.set_ylim(1e-6, 1); ax.set_xlabel(r"$z$"); ax.legend(); ax.set_title("a low-side tail from degrees 3 and 4")
+        file_name = "approx_Hermite_" + str(i) + ".png" 
+        fig.tight_layout(); fig.savefig(os.path.join(fig_dir, file_name), dpi=150)
 
     if bin_rows is not None:
         fig, ax = plt.subplots(figsize=(6, 4))
