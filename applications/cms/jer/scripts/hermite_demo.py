@@ -191,7 +191,7 @@ for k in range(1, 9):
 
 p_approx = []
 
-for i in range(K):
+for i in range(K+1):
     r_approx, e_approx = weighted_moments(r_toy, w_toy, ref, 2*i)
     p_approx.append(p_ref*Normal.basis_dot(x, r_approx, ref))
 
@@ -261,6 +261,13 @@ else:
     print("the Gaussian predicts every one of them to be zero.  The error grows fast with k: phi_k(z) ~ z^k,")
     print("so a high moment is whatever the farthest few jets do.  Moments are the check; the fit is the likelihood.")
 
+    gfull_approx = []
+    gcore_approx = []
+
+    for i in range(K+1):
+        gfull_approx.append(p_ref*Normal.basis_dot(x, weighted_moments(r, w, NormalParams(g_full["mu"], g_full["sigma"]), 2 * K)[0], NormalParams(g_full["mu"], g_full["sigma"])))
+        gcore_approx.append(p_ref*Normal.basis_dot(x, weighted_moments(r, w, NormalParams(g_core["mu"], g_core["sigma"]), 2 * K)[0], NormalParams(g_core["mu"], g_core["sigma"])))
+
 # --------------------------------------------------------------------------
 # figures
 # --------------------------------------------------------------------------
@@ -285,7 +292,7 @@ try:
     ax.set_ylim(1e-6, 1); ax.set_xlabel(r"$z$"); ax.legend(); ax.set_title("a low-side tail from degrees 3 and 4")
     fig.tight_layout(); fig.savefig(os.path.join(fig_dir, "tail.png"), dpi=150)
 
-    for i in range(K):
+    for i in range(K+1):
         fig, ax = plt.subplots(figsize=(6, 4))
         ax.semilogy(z, p_ref * sigma, label=r"reference $N(\mu,\sigma^2)$")
         ax.semilogy(z, p_true * sigma, label=r"$p_{\rm ref}\,h^2$, $c_3=%.2f$, $c_4=%.2f$" % (c_true[3], c_true[4]))
@@ -308,6 +315,20 @@ try:
         ax.set_ylim(1e-5, 1); ax.set_xlabel(r"$(r-\mu_{\rm core})/\sigma_{\rm core}$"); ax.legend()
         ax.set_title("the response and the two Gaussians")
         fig.tight_layout(); fig.savefig(os.path.join(fig_dir, "response.png"), dpi=150)
+        for i in range(K+1):
+            fig, ax = plt.subplots(figsize=(6, 4))
+            zz_data = (r - g_core["mu"]) / g_core["sigma"]
+            hist, edges = np.histogram(zz_data, bins=100, range=(-8, 6), weights=w, density=True)
+            ax.step(edges[:-1], hist, where="post", color="k", label="jets, 300-500 GeV (weighted)")
+            zg = np.linspace(-8, 6, 500)
+            ax.semilogy(zg, np.exp(-0.5 * zg**2) / np.sqrt(2 * np.pi), label="core Gaussian")
+            s = g_full["sigma"] / g_core["sigma"]; d = (g_full["mu"] - g_core["mu"]) / g_core["sigma"]
+            ax.semilogy(zg, np.exp(-0.5 * ((zg - d) / s) ** 2) / np.sqrt(2 * np.pi) / s, label="full-range Gaussian MLE")
+            ax.semilogy(z, gfull_approx[i] * s, label=r"full approximated with Hermite of %i th degree" % i)
+            ax.semilogy(z, gcore_approx[i] * s, label=r"core approximated with Hermite of %i th degree" % i)
+            ax.set_ylim(1e-5, 1); ax.set_xlabel(r"$(r-\mu_{\rm core})/\sigma_{\rm core}$"); ax.legend()
+            file_name = "approx_Hermite_response_" + str(i) + ".png" 
+            fig.tight_layout(); fig.savefig(os.path.join(fig_dir, file_name), dpi=150)
     print("\nfigures in", fig_dir)
 except ImportError:
     print("\n(no matplotlib: figures skipped)")
