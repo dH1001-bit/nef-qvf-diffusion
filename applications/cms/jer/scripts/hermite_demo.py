@@ -261,12 +261,11 @@ else:
     print("the Gaussian predicts every one of them to be zero.  The error grows fast with k: phi_k(z) ~ z^k,")
     print("so a high moment is whatever the farthest few jets do.  Moments are the check; the fit is the likelihood.")
 
-    gfull_approx = []
-    gcore_approx = []
+    g_approx = []
     zg = np.linspace(-8, 6, 500)
+    s = g_full["sigma"] / g_core["sigma"]; d = (g_full["mu"] - g_core["mu"]) / g_core["sigma"]
     for i in range(K+1):
-        gfull_approx.append(Normal.prob(zg, NormalParams(g_full["mu"], g_full["sigma"]))*Normal.basis_dot(zg, weighted_moments(r, w, NormalParams(g_full["mu"], g_full["sigma"]), 2 * K)[0], NormalParams(g_full["mu"], g_full["sigma"])))
-        gcore_approx.append(Normal.prob(zg, NormalParams(g_full["mu"], g_full["sigma"]))*Normal.basis_dot(zg, weighted_moments(r, w, NormalParams(g_core["mu"], g_core["sigma"]), 2 * K)[0], NormalParams(g_core["mu"], g_core["sigma"])))
+        g_approx.append(Normal.prob(zg, NormalParams(d, s))*Normal.basis_dot(zg, weighted_moments(r, w, d, s), 2 * K)[0], NormalParams(d, s))
 
 # --------------------------------------------------------------------------
 # figures
@@ -324,8 +323,7 @@ try:
             ax.semilogy(zg, np.exp(-0.5 * zg**2) / np.sqrt(2 * np.pi), label="core Gaussian")
             s = g_full["sigma"] / g_core["sigma"]; d = (g_full["mu"] - g_core["mu"]) / g_core["sigma"]
             ax.semilogy(zg, np.exp(-0.5 * ((zg - d) / s) ** 2) / np.sqrt(2 * np.pi) / s, label="full-range Gaussian MLE")
-            ax.semilogy(z, gfull_approx[i], label=r"full approximated with Hermite of %i th degree" % i)
-            ax.semilogy(z, gcore_approx[i], label=r"core approximated with Hermite of %i th degree" % i)
+            ax.semilogy(zg, g_approx[i], label=r"approximated with Hermite of %i th degree" % i)
             ax.set_ylim(1e-5, 1); ax.set_xlabel(r"$(r-\mu_{\rm core})/\sigma_{\rm core}$"); ax.legend()
             file_name = "approx_Hermite_response_" + str(i) + ".png" 
             fig.tight_layout(); fig.savefig(os.path.join(fig_dir, file_name), dpi=150)
