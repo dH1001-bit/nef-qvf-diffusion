@@ -262,11 +262,13 @@ else:
     print("so a high moment is whatever the farthest few jets do.  Moments are the check; the fit is the likelihood.")
 
     g_approx = []
+    L = 20
     zg = np.linspace(-8, 6, 500)
     s = g_full["sigma"] / g_core["sigma"]; d = (g_full["mu"] - g_core["mu"]) / g_core["sigma"]
+    g_baselaw = NormalParams(d,s)
     for i in range(K+1):
-        g_approx.append(Normal.prob(zg, NormalParams(d, s))*Normal.basis_dot(zg, weighted_moments(r, w, d, s), 2 * K)[0], NormalParams(d, s))
-
+        g_approx.append(Normal.prob(zg, g_baselaw)*Normal.basis_dot(zg, weighted_moments(r, w, g_baselaw, 2 * i)[0], g_baselaw))
+    g_approx.append(Normal.prob(zg, g_baselaw)*Normal.basis_dot(zg, weighted_moments(r, w, g_baselaw, 2 * L)[0], g_baselaw))
 # --------------------------------------------------------------------------
 # figures
 # --------------------------------------------------------------------------
@@ -327,6 +329,18 @@ try:
             ax.set_ylim(1e-5, 1); ax.set_xlabel(r"$(r-\mu_{\rm core})/\sigma_{\rm core}$"); ax.legend()
             file_name = "approx_Hermite_response_" + str(i) + ".png" 
             fig.tight_layout(); fig.savefig(os.path.join(fig_dir, file_name), dpi=150)
+        fig, ax = plt.subplots(figsize=(6, 4))
+        zz_data = (r - g_core["mu"]) / g_core["sigma"]
+        hist, edges = np.histogram(zz_data, bins=100, range=(-8, 6), weights=w, density=True)
+        ax.step(edges[:-1], hist, where="post", color="k", label="jets, 300-500 GeV (weighted)")
+        zg = np.linspace(-8, 6, 500)
+        ax.semilogy(zg, np.exp(-0.5 * zg**2) / np.sqrt(2 * np.pi), label="core Gaussian")
+        s = g_full["sigma"] / g_core["sigma"]; d = (g_full["mu"] - g_core["mu"]) / g_core["sigma"]
+        ax.semilogy(zg, np.exp(-0.5 * ((zg - d) / s) ** 2) / np.sqrt(2 * np.pi) / s, label="full-range Gaussian MLE")
+        ax.semilogy(zg, g_approx[-1], label=r"approximated with Hermite of %i th degree" % L)
+        ax.set_ylim(1e-5, 1); ax.set_xlabel(r"$(r-\mu_{\rm core})/\sigma_{\rm core}$"); ax.legend()
+        file_name = "approx_Hermite_response_" + str(L) + ".png" 
+        fig.tight_layout(); fig.savefig(os.path.join(fig_dir, file_name), dpi=150)
     print("\nfigures in", fig_dir)
 except ImportError:
     print("\n(no matplotlib: figures skipped)")
