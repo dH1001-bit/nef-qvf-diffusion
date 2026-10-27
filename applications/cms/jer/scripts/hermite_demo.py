@@ -262,14 +262,16 @@ else:
     print("so a high moment is whatever the farthest few jets do.  Moments are the check; the fit is the likelihood.")
 
     g_approx = []
-    zz_data = (r - g_core["mu"]) / g_core["sigma"]
     L = 20
-    zg = np.linspace(-8, 6, 500)
-    s = 1; d = 0
+    zg = g_core["mu"] + np.linspace(-8, 6, 500)*g_core["sigma"]
+    s = g_core["sigma"]; d = g_core["mu"]
     g_baselaw = NormalParams(d,s)
+    g_prob = Normal.prob(zg, g_baselaw)
     for i in range(K+1):
-        g_approx.append(Normal.prob(zg, g_baselaw)*Normal.basis_dot(zg, weighted_moments(zz_data, w, g_baselaw, 2 * i)[0], g_baselaw))
-    g_approx.append(Normal.prob(zg, g_baselaw)*Normal.basis_dot(zg, weighted_moments(zz_data, w, g_baselaw, 2 * L)[0], g_baselaw))
+        g_moments, g_errors = weighted_moments(r, w, g_baselaw, 2 * i)
+        g_approx.append(g_prob*Normal.basis_dot(zg, g_moments, g_baselaw))
+    g_moments, g_errors = weighted_moments(r, w, g_baselaw, 2 * L)
+    g_approx.append(g_prob*Normal.basis_dot(zg, g_moments, g_baselaw))
 
     g_approx = np.asarray(g_approx)
 # --------------------------------------------------------------------------
@@ -301,7 +303,7 @@ try:
         ax.semilogy(z, p_ref * sigma, label=r"reference $N(\mu,\sigma^2)$")
         ax.semilogy(z, p_true * sigma, label=r"$p_{\rm ref}\,h^2$, $c_3=%.2f$, $c_4=%.2f$" % (c_true[3], c_true[4]))
         hist, edges = np.histogram((r_toy - mu) / sigma, bins=80, range=(-5, 5), weights=w_toy, density=True)
-        ax.semilogy(z, p_approx[i] * sigma, label=r"approximated with Hermite of %i th degree" % i)
+        ax.semilogy(z, p_approx[i] * sigma, label=r"approximated with Hermite of %i.degree" % i)
         ax.step(edges[:-1], hist, where="post", lw=0.8, color="k", label="sample (weighted)")
         ax.set_ylim(1e-6, 1); ax.set_xlabel(r"$z$"); ax.legend(); ax.set_title("a low-side tail from degrees 3 and 4")
         file_name = "approx_Hermite_" + str(i) + ".png" 
@@ -319,7 +321,7 @@ try:
         ax.set_ylim(1e-5, 1); ax.set_xlabel(r"$(r-\mu_{\rm core})/\sigma_{\rm core}$"); ax.legend()
         ax.set_title("the response and the two Gaussians")
         fig.tight_layout(); fig.savefig(os.path.join(fig_dir, "response.png"), dpi=150)
-        zg_approx = g_approx
+        zg_approx = g_approx*g_core["sigma"]
         print("g_core - sigma: %f" % g_core["sigma"])
         for i in range(K+1):
             fig, ax = plt.subplots(figsize=(6, 4))
@@ -330,7 +332,7 @@ try:
             ax.semilogy(zg, np.exp(-0.5 * zg**2) / np.sqrt(2 * np.pi), label="core Gaussian")
             s = g_full["sigma"] / g_core["sigma"]; d = (g_full["mu"] - g_core["mu"]) / g_core["sigma"]
             ax.semilogy(zg, np.exp(-0.5 * ((zg - d) / s) ** 2) / np.sqrt(2 * np.pi) / s, label="full-range Gaussian MLE")
-            ax.semilogy(zg, zg_approx[i], label=r"approximated with Hermite of %i th degree" % i)
+            ax.semilogy(zg, zg_approx[i], label=r"approximated with Hermite of %i.degree" % i)
             ax.set_ylim(1e-5, 1); ax.set_xlabel(r"$(r-\mu_{\rm core})/\sigma_{\rm core}$"); ax.legend()
             file_name = "approx_Hermite_response_" + str(i) + ".png" 
             fig.tight_layout(); fig.savefig(os.path.join(fig_dir, file_name), dpi=150)
@@ -342,7 +344,7 @@ try:
         ax.semilogy(zg, np.exp(-0.5 * zg**2) / np.sqrt(2 * np.pi), label="core Gaussian")
         s = g_full["sigma"] / g_core["sigma"]; d = (g_full["mu"] - g_core["mu"]) / g_core["sigma"]
         ax.semilogy(zg, np.exp(-0.5 * ((zg - d) / s) ** 2) / np.sqrt(2 * np.pi) / s, label="full-range Gaussian MLE")
-        ax.semilogy(zg, zg_approx[-1], label=r"approximated with Hermite of %i th degree" % L)
+        ax.semilogy(zg, zg_approx[-1], label=r"approximated with Hermite of %i.degree" % L)
         ax.set_ylim(1e-5, 1); ax.set_xlabel(r"$(r-\mu_{\rm core})/\sigma_{\rm core}$"); ax.legend()
         file_name = "approx_Hermite_response_" + str(L) + ".png" 
         fig.tight_layout(); fig.savefig(os.path.join(fig_dir, file_name), dpi=150)
