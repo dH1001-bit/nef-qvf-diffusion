@@ -268,17 +268,19 @@ else:
     s = g["sigma"]; d = g["mu"]
     g_baselaw = NormalParams(d,s)
     g_prob = Normal.prob(zg, g_baselaw)
+
+    r_bounded = r[np.argwhere[(r > -8) and (r < 6)]]
     for i in range(K+1):
-        g_moments, g_errors = weighted_moments(r, w, g_baselaw, 2 * i)
+        g_moments, g_errors = weighted_moments(r_bounded, w, g_baselaw, 2 * i)
         g_approx.append(g_prob*Normal.basis_dot(zg, g_moments, g_baselaw))
         if(i!=0):
             print("R_%i: %f"%(2*i-1, g_moments[-2]))
             print("R_%i: %f"%(2*i, g_moments[-1]))
         with np.errstate(divide="ignore"):                 # h = 0 at a root of the amplitude: log p = -inf there
-            print(np.sum(w * (Normal.log_prob(r, g_baselaw) + np.log(np.abs(Normal.basis_dot(r, g_moments, g_baselaw))))))
-        Norm = (np.sum(g_approx[-1]) - (g_approx[-1][0] + g_approx[-1][-1])/2)*g_core["sigma"] # trapezoidal rule
+            print(np.sum(w * (Normal.log_prob(r_bounded, g_baselaw) + np.log(np.abs(Normal.basis_dot(r_bounded, g_moments, g_baselaw))))))
+        Norm = (np.sum(g_approx[-1]) - (g_approx[-1][0] + g_approx[-1][-1])/2)*(14*g_core["sigma"])/500 # trapezoidal rule
         print("Norm of %i: %f" % (i, Norm))
-    g_moments, g_errors = weighted_moments(r, w, g_baselaw, 2 * L)
+    g_moments, g_errors = weighted_moments(r_bounded, w, g_baselaw, 2 * L)
     g_approx.append(g_prob*Normal.basis_dot(zg, g_moments, g_baselaw))
 
     g_approx = np.asarray(g_approx)
