@@ -270,6 +270,11 @@ else:
     for i in range(K+1):
         g_moments, g_errors = weighted_moments(r, w, g_baselaw, 2 * i)
         g_approx.append(g_prob*Normal.basis_dot(zg, g_moments, g_baselaw))
+        if(i!=0):
+            print("R_%i: %f"%(2*i-1, g_moments[-2]))
+            print("R_%i: %f"%(2*i, g_moments[-1]))
+        with np.errstate(divide="ignore"):                 # h = 0 at a root of the amplitude: log p = -inf there
+            print(np.sum(w * (Normal.log_prob(r, g_baselaw) + 2.0 * np.log(np.abs(g_approx[-1])))))
     g_moments, g_errors = weighted_moments(r, w, g_baselaw, 2 * L)
     g_approx.append(g_prob*Normal.basis_dot(zg, g_moments, g_baselaw))
 
