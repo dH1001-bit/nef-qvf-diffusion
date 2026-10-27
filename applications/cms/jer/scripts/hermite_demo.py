@@ -269,9 +269,9 @@ else:
     g_baselaw = NormalParams(d,s)
     g_prob = Normal.prob(zg, g_baselaw)
 
-    args = np.argwhere(np.logical_and(r < -8, r > 6))
-    r_bounded = r[args]
-    w_bounded = w[args]
+    indices = np.where(((r > -8) & (r < 6)))[0]
+    r_bounded = r[indices]
+    w_bounded = w[indices]
     for i in range(K+1):
         g_moments, g_errors = weighted_moments(r_bounded, w_bounded, g_baselaw, 2 * i)
         g_approx.append(g_prob*Normal.basis_dot(zg, g_moments, g_baselaw))
