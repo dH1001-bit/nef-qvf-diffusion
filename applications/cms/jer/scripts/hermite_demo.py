@@ -269,27 +269,24 @@ else:
     g_baselaw = NormalParams(d,s)
     g_prob = Normal.prob(zg, g_baselaw)
 
-    indices = np.where(((r > -8*g_core["sigma"] + g_core["mu"]) & (r < 6*g_core["sigma"] + g_core["mu"])))[0]
-    r_bounded = r[indices]
-    w_bounded = w[indices]
     for i in range(K+1):
-        g_moments, g_errors = weighted_moments(r_bounded, w_bounded, g_baselaw, 2 * i)
+        g_moments, g_errors = weighted_moments(r, w, g_baselaw, i)
         g_approx.append(g_prob*Normal.basis_dot(zg, g_moments, g_baselaw))
         if(i!=0):
-            print("R_%i: %f"%(2*i-1, g_moments[-2]))
-            print("R_%i: %f"%(2*i, g_moments[-1]))
+            print("R_%i: %f"%(i-1, g_moments[-2]))
+            print("R_%i: %f"%(i, g_moments[-1]))
         with np.errstate(divide="ignore"):                 # h = 0 at a root of the amplitude: log p = -inf there
-            print(np.sum(w_bounded * (Normal.log_prob(r_bounded, g_baselaw) + np.log(np.abs(Normal.basis_dot(r_bounded, g_moments, g_baselaw))))))
-        Norm = (np.sum(g_approx[-1]) - (g_approx[-1][0] + g_approx[-1][-1])/2)*(14*g_core["sigma"])/500 # trapezoidal rule
+            print(np.sum(w * (Normal.log_prob(r, g_baselaw) + np.log(np.abs(Normal.basis_dot(r, g_moments, g_baselaw))))))
+        Norm = (np.sum(g_approx[-1]) - (g_approx[-1][0] + g_approx[-1][-1])/2)*(14*g_core["sigma"])/499 # trapezoidal rule
         print("Norm of %i: %f" % (i, Norm))
 
 
     for k in range(1, K + 1):
-        mf, ef = g_moments[k], g_errors["full"][1][k]
+        mf, ef = g_moments[k], g_errors[k]
         print("%-3d %9.4f +- %.4f (%6.1f sigma)"
                 % (k, mf, ef, mf / ef))
 
-    g_moments, g_errors = weighted_moments(r_bounded, w_bounded, g_baselaw, 2 * L)
+    g_moments, g_errors = weighted_moments(r, w, g_baselaw, L)
     g_approx.append(g_prob*Normal.basis_dot(zg, g_moments, g_baselaw))
 
     g_approx = np.asarray(g_approx)
@@ -351,7 +348,7 @@ try:
             ax.semilogy(zg, np.exp(-0.5 * zg**2) / np.sqrt(2 * np.pi), label="core Gaussian")
             s = g_full["sigma"] / g_core["sigma"]; d = (g_full["mu"] - g_core["mu"]) / g_core["sigma"]
             ax.semilogy(zg, np.exp(-0.5 * ((zg - d) / s) ** 2) / np.sqrt(2 * np.pi) / s, label="full-range Gaussian MLE")
-            ax.semilogy(zg, zg_approx[i], label=r"approximated with Hermite of %i.degree" % (2*i))
+            ax.semilogy(zg, zg_approx[i], label=r"approximated with Hermite of %i.degree" % (i))
             ax.set_ylim(1e-5, 1); ax.set_xlabel(r"$(r-\mu_{\rm core})/\sigma_{\rm core}$"); ax.legend()
             file_name = "approx_Hermite_response_" + str(i) + ".png" 
             fig.tight_layout(); fig.savefig(os.path.join(fig_dir, file_name), dpi=150)
@@ -363,7 +360,7 @@ try:
         ax.semilogy(zg, np.exp(-0.5 * zg**2) / np.sqrt(2 * np.pi), label="core Gaussian")
         s = g_full["sigma"] / g_core["sigma"]; d = (g_full["mu"] - g_core["mu"]) / g_core["sigma"]
         ax.semilogy(zg, np.exp(-0.5 * ((zg - d) / s) ** 2) / np.sqrt(2 * np.pi) / s, label="full-range Gaussian MLE")
-        ax.semilogy(zg, zg_approx[-1], label=r"approximated with Hermite of %i.degree" % (2*L))
+        ax.semilogy(zg, zg_approx[-1], label=r"approximated with Hermite of %i.degree" % (L))
         ax.set_ylim(1e-5, 1); ax.set_xlabel(r"$(r-\mu_{\rm core})/\sigma_{\rm core}$"); ax.legend()
         file_name = "approx_Hermite_response_" + str(L) + ".png" 
         fig.tight_layout(); fig.savefig(os.path.join(fig_dir, file_name), dpi=150)
