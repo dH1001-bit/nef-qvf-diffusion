@@ -264,7 +264,7 @@ else:
     g_approx = []
     L = 20
     zg = np.linspace(-8, 6, 500)
-    s = g_full["sigma"]; d = g_full["mu"]
+    s = g_core["sigma"]; d = g_core["mu"]
     g_baselaw = NormalParams(d,s)
     for i in range(K+1):
         g_approx.append(Normal.prob(zg, g_baselaw)*Normal.basis_dot(zg, weighted_moments(r, w, g_baselaw, 2 * i)[0], g_baselaw))
@@ -319,6 +319,7 @@ try:
         ax.set_title("the response and the two Gaussians")
         fig.tight_layout(); fig.savefig(os.path.join(fig_dir, "response.png"), dpi=150)
         zg_approx = (g_approx - g_core["mu"]) / g_core["sigma"]
+        print("g_core - sigma: %f" % g_core["sigma"])
         for i in range(K+1):
             fig, ax = plt.subplots(figsize=(6, 4))
             zz_data = (r - g_core["mu"]) / g_core["sigma"]
