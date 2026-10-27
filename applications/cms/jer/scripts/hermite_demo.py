@@ -269,7 +269,7 @@ else:
     g_baselaw = NormalParams(d,s)
     g_prob = Normal.prob(zg, g_baselaw)
 
-    indices = np.where(((r > -8) & (r < 6)))[0]
+    indices = np.where(((r > -8*g_core["sigma"] + g_core["mu"]) & (r < 6*g_core["sigma"] + g_core["mu"])))[0]
     r_bounded = r[indices]
     w_bounded = w[indices]
     for i in range(K+1):
@@ -282,6 +282,13 @@ else:
             print(np.sum(w_bounded * (Normal.log_prob(r_bounded, g_baselaw) + np.log(np.abs(Normal.basis_dot(r_bounded, g_moments, g_baselaw))))))
         Norm = (np.sum(g_approx[-1]) - (g_approx[-1][0] + g_approx[-1][-1])/2)*(14*g_core["sigma"])/500 # trapezoidal rule
         print("Norm of %i: %f" % (i, Norm))
+
+
+    for k in range(1, K + 1):
+        mf, ef = g_moments[k], g_errors["full"][1][k]
+        print("%-3d %9.4f +- %.4f (%6.1f sigma)"
+                % (k, mf, ef, mf / ef))
+
     g_moments, g_errors = weighted_moments(r_bounded, w_bounded, g_baselaw, 2 * L)
     g_approx.append(g_prob*Normal.basis_dot(zg, g_moments, g_baselaw))
 
