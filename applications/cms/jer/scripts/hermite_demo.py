@@ -26,7 +26,7 @@ import sys
 
 import numpy as np
 from scipy.special import eval_hermitenorm, factorial
-
+from scipy.optimize import minimize
 # --------------------------------------------------------------------------
 # 0. imports: the nefqvf package (repository src/) and the jerfit package
 # --------------------------------------------------------------------------
@@ -290,6 +290,32 @@ else:
     g_approx.append(g_prob*Normal.basis_dot(zg, g_moments, g_baselaw))
 
     g_approx = np.asarray(g_approx)
+
+
+    # amplitude fit
+
+    J = 4
+    c_amp = np.zeros((J), dtype = complex)
+    c_amp[0] = 1
+    w_vec = w.reshape((-1, 1))
+    w_matrix = w_vec @ w_vec.T
+    print(w_matrix.shape())
+
+    r_moments, r_errors = weighted_moments(r, w, g_baselaw, 2*J)
+
+    Phi_g = product_matrices(Normal, g_baselaw, J)               # (2K+1, K+1, K+1)
+
+    def loss_function(c):
+        c = c / np.linalg.norm(c)
+        R_c = ratio_coefficients(c, Phi_g) 
+        quad_matrix = R_c - r_moments
+        J_c = 0.5*(quad_matrix.T @ w_matrix @ quad_matrix)
+        return J_c
+
+    c_result, success_bool = minimize(loss_function, c_amp)
+
+    print(success_bool)
+
 # --------------------------------------------------------------------------
 # figures
 # --------------------------------------------------------------------------
