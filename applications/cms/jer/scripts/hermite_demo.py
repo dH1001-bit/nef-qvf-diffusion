@@ -295,7 +295,7 @@ else:
     # amplitude fit
 
     J = 4
-    c_amp = np.zeros((J,1), dtype = complex)
+    c_amp = np.zeros((J+1), dtype = complex)
     c_amp[0] = 1
     w_matrix = np.eye(2*J+1)
 
@@ -307,15 +307,16 @@ else:
 
     def loss_function(c):
         c = c / np.linalg.norm(c)
+        c_tmp = c.reshape((-1,1))
         for i in range(2*J+1):
-            R_c[i] = c.H @ Phi_g[i] @ c
+            R_c[i] = c_tmp.conj().T @ Phi_g[i] @ c_tmp
         quad_matrix = R_c - r_moments
         J_c = 0.5*(quad_matrix.T @ w_matrix @ quad_matrix)
         return J_c
 
-    c_result, success_bool = minimize(loss_function, c_amp)
+    optimizer_result = minimize(loss_function, c_amp)
 
-    print(success_bool)
+    print(optimizer_result[1])
 
 # --------------------------------------------------------------------------
 # figures
