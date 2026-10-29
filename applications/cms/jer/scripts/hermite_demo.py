@@ -314,7 +314,11 @@ else:
         J_c = 0.5*(quad_matrix.T @ w_matrix @ quad_matrix)
         return J_c
 
-    optimizer_result = minimize(loss_function, c_amp)
+    def logloss(c, mu, sigma, r, w):
+        return -loglik(c, mu, sigma, r, w)
+
+    optimizer_result = minimize(logloss, c_amp, args=(g["mu"],g["sigma"], r, w))
+    #optimizer_result = minimize(loss_function, c_amp)
 
     print(optimizer_result)
 
