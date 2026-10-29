@@ -318,7 +318,9 @@ else:
 
     print(optimizer_result)
 
-    amplitude_approx = g_prob*(Normal.basis_dot(zg, np.real(optimizer_result.x), g_baselaw))**2
+    c_amp = optimizer_result.x/np.linalg.norm(optimizer_result.x)
+
+    amplitude_approx = g_prob*(Normal.basis_dot(zg, c_amp, g_baselaw))**2
 # --------------------------------------------------------------------------
 # figures
 # --------------------------------------------------------------------------
