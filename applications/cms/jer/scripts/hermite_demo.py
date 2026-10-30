@@ -324,6 +324,35 @@ else:
 
     c_amp = optimizer_result.x/np.linalg.norm(optimizer_result.x)
 
+    def weighted_likelihood_eq(c, r, w, baselaw):
+        j_max = c.shape[0] - 1
+        r_size = r.shape[0]
+        h_c = Normal.basis_dot(r, c, baselaw)
+        inverse_h = np.reciprocal(h_c).reshape((r_size, j_max + 1))
+        B = Normal.basis(r, j_max, baselaw)
+        result = (w @ (inverse_h*B)) / w.sum()
+        return result
+
+        
+    tol = 1e-8
+    alpha = 0.01
+    max_iter = 1000
+    c_diff = 1 + 0j
+    c_new = np.zeros(c_amp.shape, dtype=complex)
+    i = 0
+    while((tol < c_diff) and (max_iter > i)):
+        c_new = weighted_likelihood_eq(c_amp, r, w, g_baselaw)
+        c_new = alpha*c_new + (1-alpha)*c_amp
+        c_new = c_new / np.linalg.norm(c_new)
+        c_diff = np.abs(c_new - c_amp)
+        c_amp = c_new
+        i = i + 1
+
+    if (tol > c_diff):
+        print("Convergence was successfull")
+    else:
+        print("Convergence was unsuccessfull")
+
     amplitude_approx = g_prob*(Normal.basis_dot(zg, c_amp, g_baselaw))**2
 # --------------------------------------------------------------------------
 # figures
