@@ -403,6 +403,7 @@ try:
 
         fig, ax = plt.subplots(figsize=(6, 4))
         zz_data = (r - g_core["mu"]) / g_core["sigma"]
+        amplitude_approx = amplitude_approx*g_core["sigma"]
         hist, edges = np.histogram(zz_data, bins=100, range=(-8, 6), weights=w, density=True)
         ax.step(edges[:-1], hist, where="post", color="k", label="jets, 300-500 GeV (weighted)")
         zg = np.linspace(-8, 6, 500)
