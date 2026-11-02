@@ -315,17 +315,22 @@ else:
         return J_c
 
     def logloss(c, mu, sigma, r, w):
-        return -loglik(c, mu, sigma, r, w)
+        c = np.asarray(c, dtype=complex)
+        c = c / np.linalg.norm(c)
+        params = NormalParams(mu, sigma)
+        h = Normal.basis_dot(r, c, params)
+        with np.errstate(divide="ignore"):                 # h = 0 at a root of the amplitude: log p = -inf there
+            return -np.sum(w * (Normal.log_prob(r, params) + 2.0 * np.log(np.abs(h))))
 
-    #optimizer_result = minimize(logloss, c_amp, args=(g["mu"],g["sigma"], r, w))
-    optimizer_result = minimize(loss_function, c_amp)
+    optimizer_result = minimize(logloss, c_amp, args=(g["mu"],g["sigma"], r, w))
+    #optimizer_result = minimize(loss_function, c_amp)
 
     print(optimizer_result)
 
     c_amp = optimizer_result.x/np.linalg.norm(optimizer_result.x)
 
 
-    amplitude_approx = g_prob*(Normal.basis_dot(zg, c_amp, g_baselaw))**2
+    amplitude_approx = g_prob*(Normal.basis_dot(zg, np.abs(c_amp), g_baselaw))**2
 # --------------------------------------------------------------------------
 # figures
 # --------------------------------------------------------------------------
