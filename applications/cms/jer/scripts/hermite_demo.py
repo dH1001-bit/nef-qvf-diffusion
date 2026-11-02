@@ -322,7 +322,7 @@ else:
         with np.errstate(divide="ignore"):                 # h = 0 at a root of the amplitude: log p = -inf there
             return -np.sum(w * (Normal.log_prob(r, params) + 2.0 * np.log(np.abs(h))))
 
-    c_real_expended = np.concatenate(np.real(c_amp), np.imag(c_amp))
+    c_real_expended = np.concatenate((np.real(c_amp), np.imag(c_amp)), axis=None)
 
     optimizer_result = minimize(logloss, c_real_expended, args=(g["mu"],g["sigma"], r, w))
     #optimizer_result = minimize(loss_function, c_real_expended)

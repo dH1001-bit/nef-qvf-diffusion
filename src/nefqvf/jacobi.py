@@ -223,12 +223,14 @@ def basis_dot(
             coefficient_array, output_shape + (coefficient_array.shape[-1],)
         )
 
+    coeff_dtype = coefficients_array.dtype
+
     result = _basis_dot_kernel(
         family,
-        np.asarray(x_array, dtype=float).ravel(),
-        np.asarray(mean_array, dtype=float).ravel(),
-        np.asarray(fixed_array, dtype=float).ravel(),
-        np.asarray(coefficients_array, dtype=float).reshape(
+        np.asarray(x_array, dtype=coeff_dtype).ravel(),
+        np.asarray(mean_array, dtype=coeff_dtype).ravel(),
+        np.asarray(fixed_array, dtype=coeff_dtype).ravel(),
+        np.asarray(coefficients_array, dtype=coeff_dtype).reshape(
             -1, coefficient_array.shape[-1]
         ),
     )
