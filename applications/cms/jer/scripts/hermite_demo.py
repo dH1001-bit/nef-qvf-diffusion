@@ -322,15 +322,19 @@ else:
         with np.errstate(divide="ignore"):                 # h = 0 at a root of the amplitude: log p = -inf there
             return -np.sum(w * (Normal.log_prob(r, params) + 2.0 * np.log(np.abs(h))))
 
-    optimizer_result = minimize(logloss, c_amp, args=(g["mu"],g["sigma"], r, w))
-    #optimizer_result = minimize(loss_function, c_amp)
+    c_real_expended = np.concatenate(np.real(c_amp), np.imag(c_amp))
+
+    optimizer_result = minimize(logloss, c_real_expended, args=(g["mu"],g["sigma"], r, w))
+    #optimizer_result = minimize(loss_function, c_real_expended)
 
     print(optimizer_result)
 
-    c_amp = optimizer_result.x/np.linalg.norm(optimizer_result.x)
+    c_real_expended = optimizer_result.x/np.linalg.norm(optimizer_result.x)
+    c_amp = c_real_expended[:J+1] + 1j*c_real_expended[J+1:]
 
+    print(c_amp)
 
-    amplitude_approx = g_prob*(Normal.basis_dot(zg, np.abs(c_amp), g_baselaw))**2
+    amplitude_approx = g_prob*np.abs(Normal.basis_dot(zg, c_amp, g_baselaw))**2
 # --------------------------------------------------------------------------
 # figures
 # --------------------------------------------------------------------------
