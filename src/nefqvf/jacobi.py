@@ -96,9 +96,11 @@ def _basis_dot_kernel(
     coefficients: np.ndarray,
 ) -> np.ndarray:
     """Evaluate one expansion per flattened instance by Clenshaw recurrence."""
-
+    
     degree = coefficients.shape[1] - 1
-    result = np.empty(x.size, dtype=np.float64)
+    coefficient_array = np.asarray(coefficients)
+    coeff_dtype = coefficient_array.dtype
+    result = np.empty(x.size, dtype=coeff_dtype)
 
     for index in prange(x.size):
         if degree == 0:
@@ -161,6 +163,7 @@ def basis(
     x_array, mean_array, fixed_array, output_shape, _ = _evaluation_values(
         x, mean, fixed, grid
     )
+    
     result = _basis_kernel(
         family,
         np.asarray(x_array, dtype=float).ravel(),
@@ -223,8 +226,9 @@ def basis_dot(
             coefficient_array, output_shape + (coefficient_array.shape[-1],)
         )
 
-    coeff_dtype = coefficients_array.dtype
-
+    coeff_dtype = coefficient_array.dtype
+    print("DEBUGGING MESSAGE: THE COEFF DTYPE OF FUNCTION BASIS_DOT IS SET HERE")
+    print(coeff_dtype)
     result = _basis_dot_kernel(
         family,
         np.asarray(x_array, dtype=coeff_dtype).ravel(),
