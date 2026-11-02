@@ -227,8 +227,7 @@ def basis_dot(
         )
 
     coeff_dtype = coefficient_array.dtype
-    print("DEBUGGING MESSAGE: THE COEFF DTYPE OF FUNCTION BASIS_DOT IS SET HERE")
-    print(coeff_dtype)
+
     result = _basis_dot_kernel(
         family,
         np.asarray(x_array, dtype=coeff_dtype).ravel(),
