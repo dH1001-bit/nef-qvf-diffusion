@@ -45,6 +45,8 @@ chain and needs a grid proxy; see "The exports" below.
     scripts/reduce_rows.py      cuts and prescale, file by file, into one fit-sized npz
     scripts/sbatch_fit.sh       the same fit as a Slurm job (anything above laptop size)
     scripts/make_toy.py         synthetic rows in the same schema (develop without the cluster)
+    scripts/plot_response.py    the weighted response in any pt_gen / eta window, all 72 files, every jet (1.5 min)
+    scripts/count_jets.py       rows, sum w and n_eff of the whole export by H_T slice, |y| and pt_gen
     scripts/hermite_demo.py     the Hermite OPS and the Born model, step by step; the student's starting point for the tail fit
     tests/test_closure.py       closure of every fit on the synthetic sample
 
