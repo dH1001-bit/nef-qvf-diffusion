@@ -162,7 +162,7 @@ def concatenate(paths_or_rows) -> Rows:
     return Rows(out, gen=gen_out, meta=meta)
 
 
-def select(rows: Rows, genpt=(None, None), absy=(None, None), max_dr=0.4,
+def select(rows: Rows, genpt=(None, None), absy=(None, None), abseta=(None,None), max_dr=0.4,
            isolate_dr2=None, response=(None, None)) -> Rows:
     """The analysis cuts.  ``genpt``/``absy``/``response`` are (lo, hi) with
     None for open; ``max_dr`` is the matching radius (JME: R/2); ``isolate_dr2``
@@ -177,6 +177,10 @@ def select(rows: Rows, genpt=(None, None), absy=(None, None), max_dr=0.4,
     ay = np.abs(rows.recy)
     if lo is not None: m &= ay >= lo
     if hi is not None: m &= ay < hi
+    lo, hi = abseta
+    aeta = np.abs(rows.receta)
+    if lo is not None: m &= aeta >= lo
+    if hi is not None: m &= aeta < hi
     lo, hi = response
     if lo is not None: m &= rows.response >= lo
     if hi is not None: m &= rows.response < hi
