@@ -22,6 +22,20 @@ smaller sample.
 """
 import argparse, glob, os, re, time
 import numpy as np
+import sys
+from scipy.optimize import minimize
+# --------------------------------------------------------------------------
+# 0. imports: the nefqvf package (repository src/) and the jerfit package
+# --------------------------------------------------------------------------
+HERE = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else os.getcwd()
+APP = os.path.abspath(os.path.join(HERE, ".."))                  # applications/cms/jer
+REPO = os.path.abspath(os.path.join(APP, "..", "..", ".."))        # the repository root
+for p in (APP, os.path.join(REPO, "src")):
+    if p not in sys.path:
+        sys.path.insert(0, p)
+
+from nefqvf import Normal, NormalParams, product_matrices, ratio_coefficients   # noqa: E402
+from jerfit import load, select, fit_bin, fit_core    
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--pt", nargs=2, type=float, default=(300.0, 500.0), metavar=("LO", "HI"),
@@ -101,6 +115,61 @@ norm = w.sum() * np.diff(edges)
 dens, err = sw / norm, np.sqrt(sw2) / norm
 centres = 0.5 * (edges[1:] + edges[:-1])
 gauss = np.exp(-0.5 * ((centres - mean) / rms) ** 2) / (np.sqrt(2 * np.pi) * rms)
+
+
+# amplitude fit
+def weighted_moments(r, w, params, k_max):
+    """<phi_k>_w and its error for k = 0 ... k_max."""
+    B = Normal.basis(r, k_max, params)
+    mean = (w @ B) / w.sum()
+    err = np.sqrt(((w[:, None] ** 2) * (B - mean) ** 2).sum(axis=0)) / w.sum()
+    return mean, err
+
+J = 6
+c_amp = np.zeros((J+1), dtype = complex)
+c_amp[0] = 1
+c_amp = c_amp + 0.01j
+w_matrix = np.eye(2*J+1)
+
+g_baselaw = NormalParams(mean, rms)
+g_prob = Normal.prob(centres, g_baselaw)
+
+R_c = np.zeros((2*J+1))
+r_moments, r_errors = weighted_moments(r, w, g_baselaw, 2*J)
+
+Phi_g = product_matrices(Normal, g_baselaw, J)               # (2K+1, K+1, K+1)
+
+def loss_function(c):
+    c = c / np.linalg.norm(c)
+    c_tmp = c.reshape((-1,1))
+    for i in range(2*J+1):
+        R_c[i] = c_tmp.conj().T @ Phi_g[i] @ c_tmp
+    quad_matrix = R_c - r_moments
+    J_c = 0.5*(quad_matrix.T @ w_matrix @ quad_matrix)
+    return J_c
+
+def logloss(c, mu, sigma, r, w):
+    c = np.asarray(c, dtype=complex)
+    c = c / np.linalg.norm(c)
+    params = NormalParams(mu, sigma)
+    h = Normal.basis_dot(r, c, params)
+    with np.errstate(divide="ignore"):                 # h = 0 at a root of the amplitude: log p = -inf there
+        return -np.sum(w * (Normal.log_prob(r, params) + 2.0 * np.log(np.abs(h))))
+
+c_real_expended = np.concatenate((np.real(c_amp), np.imag(c_amp)), axis=None)
+
+optimizer_result = minimize(logloss, c_real_expended, args=(mean, rms, r, w))
+#optimizer_result = minimize(loss_function, c_real_expended)
+
+print(optimizer_result)
+
+c_real_expended = optimizer_result.x/np.linalg.norm(optimizer_result.x)
+c_amp = c_real_expended[:J+1] + 1j*c_real_expended[J+1:]
+
+print(c_amp)
+
+amplitude_approx = g_prob*np.abs(Normal.basis_dot(centres, c_amp, g_baselaw))**2
+
 
 import matplotlib
 matplotlib.use("Agg")
