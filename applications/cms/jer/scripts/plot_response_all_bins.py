@@ -35,6 +35,22 @@ or rebin (another --bins that divides the stored bin count) without the
 Mean and rms are exact (from sum w r and sum w r^2 over the jets inside
 --range); the median is interpolated in the fine histogram.
 
+Two fits per cell, both drawn over the data with the relative residual
+(data - fit)/fit in a panel below:
+  * Gaussian: the full-range weighted MLE, mu = mean and sigma = rms
+    (jerfit.fit_bin in closed form).
+  * Amplitude fit (hermite_demo.py, 'amplitude fit'): the Born model
+    p(r) = N(r; mu, sigma) |h(r)|^2,  h = sum_{n<=J} c_n phi_n,  c complex, ||c|| = 1,
+    with mu, sigma fixed to the Gaussian MLE and all c_n free, maximising the
+    weighted log-likelihood.  phi_n(z) = He_n(z)/sqrt(n!) is the orthonormal
+    Hermite basis of N(mu, sigma^2) (hermite_demo section 1, = nefqvf
+    Normal.basis), built here with numpy so no numba is needed.  The jets
+    are not kept, so the likelihood is evaluated at the centres of the fine
+    response bins (width 0.002 by default, far below any sigma here).
+    dlnL_eff = n_eff * (mean log-likelihood gain per unit weight over the
+    Gaussian) is the gain in units of effective events.  --amp-degree 0
+    switches the fit off.  Coefficients go to fits.json.
+
 As in plot_response.py: the grid is in GENERATOR pt (binning in reconstructed
 pt selects on the fluctuation being measured), no trigger is needed (the H_T
 slices with their cross-section weights add up to the inclusive spectrum),
@@ -42,7 +58,9 @@ and every slice must be read.  summary.txt lists, per cell, which slice
 dominates the summed weight.
 """
 import argparse, glob, json, os, re, time
+from math import factorial
 import numpy as np
+from scipy.optimize import minimize
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--pt-edges", nargs="+", type=float,
@@ -59,6 +77,8 @@ ap.add_argument("--range", nargs=2, type=float, default=(0.0, 2.0), metavar=("LO
 ap.add_argument("--bins", type=int, default=100, help="response bins in the plots")
 ap.add_argument("--fine", type=int, default=10, help="stored sub-bins per plotted bin (median, rebinning)")
 ap.add_argument("--min-rows", type=int, default=1, help="skip cells with fewer jets")
+ap.add_argument("--amp-degree", type=int, default=6, help="highest Hermite degree J of the amplitude fit (0: no fit)")
+ap.add_argument("--res-max", type=float, default=1.0, help="y range +-res-max of the relative residual panels")
 ap.add_argument("--files", default="/scratch-cbe/users/robert.schoefbeck/Jets/jer_export_UL18/jer_UL18_HT*.npz")
 ap.add_argument("--max-files", type=int, default=None, help="only the first N files (a quick look; biased spectrum)")
 ap.add_argument("--outdir", default=None, help="output directory (default: fig/response_bins_<var>)")
@@ -210,24 +230,84 @@ sw2 = sw2_c.reshape(nc, a.bins, fine).sum(-1)
 cnt = cnt_c.reshape(nc, a.bins, fine).sum(-1)
 edges = R[::fine]
 centres = 0.5 * (edges[1:] + edges[:-1])
+rc = 0.5 * (R[1:] + R[:-1])                      # fine-bin centres: where the fits are evaluated
+
+# --- the amplitude fit of hermite_demo.py, in every cell
+def hermite_basis(z, J):
+    """phi_n(z) = He_n(z) / sqrt(n!), n = 0 ... J: orthonormal under N(0, 1); last axis is the degree."""
+    return np.polynomial.hermite_e.hermevander(z, J) / np.sqrt([float(factorial(k)) for k in range(J + 1)])
+
+def log_normal(r, mu, sigma):
+    z = (r - mu) / sigma
+    return -0.5 * z * z - np.log(sigma) - 0.5 * np.log(2 * np.pi)
+
+def amplitude_fit(x, wt, mu, sigma, J):
+    """Born model N(x; mu, sigma) |sum_n c_n phi_n|^2 with complex c, ||c|| = 1, mu and sigma fixed;
+    maximise sum wt log p over the points x (here: fine-bin centres, wt: their summed weight).
+    As in hermite_demo, c is passed to the optimiser as (Re c, Im c) and normalised inside.
+    Returns c (global phase fixed by c_0 real >= 0), the mean log-likelihood per unit weight of
+    the fit and of the Gaussian (c = e_0), and the optimiser's success flag."""
+    B = hermite_basis((x - mu) / sigma, J)        # built once; h = B @ c inside the objective
+    wt = wt / wt.sum()
+    ll_gauss = float(wt @ log_normal(x, mu, sigma))
+
+    def nll(v):
+        h2 = np.abs(B @ (v[:J + 1] + 1j * v[J + 1:])) ** 2 / (v @ v)     # v @ v = ||c||^2
+        return -(ll_gauss + wt @ np.log(np.maximum(h2, 1e-300)))     # a root of h on a data point: log 0
+
+    # start next to the Gaussian, c = e_0.  Not exactly on it: at real c the gradient of |h|^2 in
+    # Im c is 2 Im(h) B = 0, so a start with Im c = 0 never leaves the real subspace (the complex
+    # model is the sum of two squares h_re^2 + h_im^2, strictly more than one real square).
+    v0 = np.zeros(2 * (J + 1)); v0[0] = 1.0; v0[J + 2:] = 0.01
+    res = minimize(nll, v0, method="BFGS")
+    c = (res.x[:J + 1] + 1j * res.x[J + 1:]) / np.linalg.norm(res.x)
+    if abs(c[0]) > 0:
+        c = c * np.exp(-1j * np.angle(c[0]))     # |h|^2 does not see a global phase
+    return c, -float(res.fun), ll_gauss, bool(res.success)
+
+def amplitude_density(x, c, mu, sigma):
+    return np.exp(log_normal(x, mu, sigma)) * np.abs(hermite_basis((x - mu) / sigma, len(c) - 1) @ c) ** 2
+
+J = a.amp_degree
+amp_c = np.full((nc, J + 1), np.nan, complex)
+ll_amp, ll_gauss, amp_ok = np.full(nc, np.nan), np.full(nc, np.nan), np.zeros(nc, bool)
+if J > 0:
+    t0 = time.time()
+    for c in range(nc):
+        m = sw_c[c] > 0
+        if n_c[c] < max(a.min_rows, 1) or not rms[c] > 0 or m.sum() < 2:
+            continue
+        amp_c[c], ll_amp[c], ll_gauss[c], amp_ok[c] = amplitude_fit(rc[m], sw_c[c][m], mean[c], rms[c], J)
+    print("\namplitude fits, J = %d: %d cells in %.0f s, %d without optimiser convergence"
+          % (J, np.isfinite(ll_amp).sum(), time.time() - t0, (np.isfinite(ll_amp) & ~amp_ok).sum()))
+dlnl = n_eff * (ll_amp - ll_gauss)               # log-likelihood gain in units of effective events
 
 # --- summary table (stdout and summary.txt)
-lines = ["%-15s %-13s %10s %11s %9s %7s %7s %7s %6s  %-6s %s"
-         % ("pt_gen [GeV]", "|%s|" % var, "rows", "sum w [pb]", "n_eff", "mean", "rms", "median", "out%",
-            "merged", "dominant H_T slice (share of sum w)")]
+lines = ["%-15s %-13s %10s %11s %9s %7s %7s %7s %9s %6s  %-6s %s"
+         % ("pt_gen [GeV]", "|%s|" % var, "rows", "sum w [pb]", "n_eff", "mean", "rms", "median", "dlnL_eff",
+            "out%", "merged", "dominant H_T slice (share of sum w)")]
 for c, (ipt, s, e) in enumerate(cells):
     if n_c[c] == 0:
         continue
     j = int(np.argmax(slice_c[c, :, 1]))
     flag = ("%d" % (e - s + 1) if e > s else "") + (" LOW" if n_eff[c] < a.min_neff else "")
-    lines.append("%6g-%-8g %5.3g-%-7.3g %10d %11.4g %9.0f %7.4f %7.4f %7.4f %6.2f  %-6s %s (%.2f)"
+    lines.append("%6g-%-8g %5.3g-%-7.3g %10d %11.4g %9.0f %7.4f %7.4f %7.4f %9.1f %6.2f  %-6s %s (%.2f)"
                  % (PT[ipt], PT[ipt + 1], ETA[s], ETA[e + 1], n_c[c], W_c[c], n_eff[c], mean[c], rms[c],
-                    median[c], 100 * out_frac[c], flag, slice_names[j], slice_c[c, j, 1] / W_c[c]))
+                    median[c], dlnl[c], 100 * out_frac[c], flag, slice_names[j], slice_c[c, j, 1] / W_c[c]))
 print("\n" + "\n".join(lines))
 with open(os.path.join(outdir, "summary.txt"), "w") as fh:
     fh.write("# merged: number of fine |%s| cells combined; LOW: n_eff still below --min-neff %g\n"
              % (var, a.min_neff))
     fh.write("\n".join(lines) + "\n")
+if J > 0:
+    fits = [dict(pt_gen=[float(PT[ipt]), float(PT[ipt + 1])], abs_eta=[float(ETA[s]), float(ETA[e + 1])],
+                 n_eff=float(n_eff[c]), mu=float(mean[c]), sigma=float(rms[c]), degree=J,
+                 c_re=[float(x) for x in amp_c[c].real], c_im=[float(x) for x in amp_c[c].imag],
+                 lnL_per_w_amp=float(ll_amp[c]), lnL_per_w_gauss=float(ll_gauss[c]), dlnL_eff=float(dlnl[c]),
+                 converged=bool(amp_ok[c]))
+            for c, (ipt, s, e) in enumerate(cells) if np.isfinite(ll_amp[c])]
+    with open(os.path.join(outdir, "fits.json"), "w") as fh:
+        json.dump(dict(var=var, fits=fits), fh, indent=1)
 
 import matplotlib
 matplotlib.use("Agg")
@@ -241,21 +321,36 @@ for c, (ipt, s, e) in enumerate(cells):
         continue
     norm = W_c[c] * np.diff(edges)
     dens, err = sw[c] / norm, np.sqrt(sw2[c]) / norm
-    gauss = np.exp(-0.5 * ((centres - mean[c]) / rms[c]) ** 2) / (np.sqrt(2 * np.pi) * rms[c]) \
-        if rms[c] > 0 else np.full_like(centres, np.nan)
-    fig, axes = plt.subplots(1, 2, figsize=(11, 4.2))
-    for ax, log in zip(axes, (False, True)):
+    # the fitted densities on the fine grid: smooth curves, and averaged per plotted bin for the residuals
+    models = []                                   # (density on rc, colour, label)
+    if rms[c] > 0:
+        models.append((np.exp(log_normal(rc, mean[c], rms[c])), "C0",
+                       "Gaussian, mean %.3f rms %.3f" % (mean[c], rms[c])))
+    if J > 0 and np.isfinite(ll_amp[c]):
+        models.append((amplitude_density(rc, amp_c[c], mean[c], rms[c]), "C3",
+                       r"amplitude fit, $J$ = %d, $\Delta\ln L_{\rm eff}$ = %.1f" % (J, dlnl[c])))
+    fig, axes = plt.subplots(2, 2, figsize=(11, 6.2), sharex="col", gridspec_kw=dict(height_ratios=(3, 1)))
+    for col, log in enumerate((False, True)):
+        ax, rx = axes[0, col], axes[1, col]
         ax.errorbar(centres[ok], dens[ok], yerr=err[ok], fmt=".", ms=3, color="k", lw=0.8, label="jets (weighted)")
-        ax.plot(centres, gauss, color="C0", lw=1, label="Gaussian, mean %.3f rms %.3f" % (mean[c], rms[c]))
-        ax.set_xlabel(r"$p_T^{\rm rec}/p_T^{\rm gen}$")
+        rx.axhline(0.0, color="k", lw=0.6)
+        for k, (f, colour, label) in enumerate(models):
+            ax.plot(rc, f, color=colour, lw=1, label=label)
+            fb = f.reshape(a.bins, fine).mean(1)  # the model's mean density in each plotted bin
+            good = ok & (fb > 0)
+            shift = (k - 0.5 * (len(models) - 1)) * 0.2 * (edges[1] - edges[0])   # side by side, not on top
+            rx.errorbar(centres[good] + shift, dens[good] / fb[good] - 1, yerr=err[good] / fb[good],
+                        fmt=".", ms=2.5, lw=0.6, color=colour)
         ax.set_ylabel("1/N dN/dr")
         if log:
             ax.set_yscale("log"); ax.set_ylim(max(dens[ok].min() / 3, 1e-7), dens[ok].max() * 3)
         ax.legend(fontsize=8)
+        rx.set_ylim(-a.res_max, a.res_max); rx.grid(alpha=0.3)
+        rx.set_xlabel(r"$p_T^{\rm rec}/p_T^{\rm gen}$"); rx.set_ylabel("(data - fit) / fit", fontsize=8)
     note = "  (%d |%s| cells merged)" % (e - s + 1, var) if e > s else ""
     fig.suptitle(r"UL18 MadGraph, $%g \leq p_T^{\rm gen} < %g$ GeV, $%g \leq |%s| < %g$;  %d jets, $n_{\rm eff}$ = %.0f%s"
                  % (PT[ipt], PT[ipt + 1], ETA[s], var, ETA[e + 1], n_c[c], n_eff[c], note), fontsize=10)
-    fig.tight_layout()
+    fig.subplots_adjust(left=0.07, right=0.98, bottom=0.09, top=0.92, hspace=0.06, wspace=0.22)
     tag = "eta%02d" % s if s == e else "eta%02d-%02d" % (s, e)
     fig.savefig(os.path.join(outdir, "response_pt%02d_%s__pt%g-%g_%s%g-%g.png"
                              % (ipt, tag, PT[ipt], PT[ipt + 1], var, ETA[s], ETA[e + 1])), dpi=150)
