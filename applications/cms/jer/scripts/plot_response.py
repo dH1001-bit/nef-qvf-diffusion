@@ -182,6 +182,7 @@ for ax, log in zip(axes, (False, True)):
     ax.plot(centres, gauss, color="C0", lw=1, label="Gaussian, mean %.3f rms %.3f" % (mean, rms))
     ax.set_xlabel(r"$p_T^{\rm rec}/p_T^{\rm gen}$")
     ax.set_ylabel("1/N dN/dr")
+    ax.plot(centres, amplitude_approx, label=r"amplitude fit" )
     if log:
         ax.set_yscale("log"); ax.set_ylim(max(dens[ok].min() / 3, 1e-7), dens.max() * 3)
     ax.legend(fontsize=8)
