@@ -6,20 +6,31 @@ numpy + matplotlib only; written top to bottom so it can be stepped through in
 ipython.  plot_response.py does the same for one hand-picked window.
 
     python3 scripts/plot_response_all_bins.py
+    python3 scripts/plot_response_all_bins.py --min-neff 0                # no merging: the plain grid
     python3 scripts/plot_response_all_bins.py --var geneta --outdir fig/resp_geneta
     python3 scripts/plot_response_all_bins.py --eta-edges 0 0.522 0.783 1.131 1.305 1.740 1.930 2.043 2.322 2.5 2.853 2.964 3.139 5.191
-    python3 scripts/plot_response_all_bins.py --load fig/response_bins_receta/histograms.npz --bins 50   # replot, no reading
+    python3 scripts/plot_response_all_bins.py --load fig/response_bins_receta/histograms.npz --min-neff 300   # re-merge, no reading
     ipython -i scripts/plot_response_all_bins.py -- --max-files 9
 
-Default grid: the pt_gen and |y| edges of count_jets.py.  The last argument
+Default grid: the pt_gen and |y| edges of count_jets.py.  The --eta-edges
 example is the CMS JER scale-factor |eta| binning.
+
+Merging (--min-neff): n_eff falls steeply towards high |eta|, so within each
+pt_gen row adjacent |eta| cells are merged, walking outwards from |eta| = 0:
+a cell is closed once its n_eff reaches --min-neff, and a leftover tail that
+never reaches it is added to the last closed cell.  The pt_gen axis is never
+merged, so every row keeps its pt_gen window and the rows can end up with
+different |eta| edges.  These are written to binning.json.  A row whose total
+n_eff is below the threshold becomes one cell and is marked LOW in summary.txt.
 
 How it works: the files are read once.  Each jet gets a cell index
 (ipt, ieta) and a fine response-bin index, and np.bincount adds w, w^2 and 1
 into per-cell histograms.  Memory is one file plus the histograms, never the
-jets themselves.  The fine histograms (--fine sub-bins per plotted bin) are
-saved to <outdir>/histograms.npz, so --load can replot with another --bins
-(any divisor of the stored bin count) without the ~10 min read.
+jets themselves.  The fine, UNMERGED histograms (--fine sub-bins per plotted
+bin) are saved to <outdir>/histograms.npz.  Every stored quantity is a sum,
+so merging happens afterwards, and --load can re-merge (another --min-neff)
+or rebin (another --bins that divides the stored bin count) without the
+~10 min read.
 
 Mean and rms are exact (from sum w r and sum w r^2 over the jets inside
 --range); the median is interpolated in the fine histogram.
@@ -30,7 +41,7 @@ slices with their cross-section weights add up to the inclusive spectrum),
 and every slice must be read.  summary.txt lists, per cell, which slice
 dominates the summed weight.
 """
-import argparse, glob, os, re, time
+import argparse, glob, json, os, re, time
 import numpy as np
 
 ap = argparse.ArgumentParser()
@@ -38,7 +49,9 @@ ap.add_argument("--pt-edges", nargs="+", type=float,
                 default=[97, 140, 200, 280, 400, 550, 750, 1000, 1400, 2000, 3500, 1e5],
                 help="pt_gen bin edges [GeV]")
 ap.add_argument("--eta-edges", nargs="+", type=float, default=[0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 5.0],
-                help="bin edges in |var|")
+                help="finest bin edges in |var|; merged per pt_gen row according to --min-neff")
+ap.add_argument("--min-neff", type=float, default=100.0,
+                help="merge adjacent |var| cells of a pt_gen row until n_eff reaches this (0: no merging)")
 ap.add_argument("--var", default="receta", choices=("receta", "recy", "geneta", "geny"))
 ap.add_argument("--max-dr", type=float, default=0.4, help="matching radius, at most the export's 0.4")
 ap.add_argument("--range", nargs=2, type=float, default=(0.0, 2.0), metavar=("LO", "HI"),
@@ -138,95 +151,138 @@ else:
              slice_names=np.array(slice_names), slice_tab=slice_tab)
     print("histograms:", os.path.join(outdir, "histograms.npz"))
 
+# --- merge adjacent |eta| cells within each pt_gen row until n_eff >= --min-neff
+def neff_of(w, w2):
+    return w * w / w2 if w2 > 0 else 0.0
+
+cells = []                                        # (ipt, ie0, ie1): |eta| from ETA[ie0] to ETA[ie1 + 1]
+for ipt in range(npt):
+    row, start, gw, gw2 = [], 0, 0.0, 0.0
+    for ie in range(neta):
+        b = ipt * neta + ie
+        gw += W[b]; gw2 += W2[b]
+        if neff_of(gw, gw2) >= a.min_neff:
+            row.append([start, ie]); start, gw, gw2 = ie + 1, 0.0, 0.0
+    if start < neta:                              # tail that never reached the threshold
+        if row:
+            row[-1][1] = neta - 1
+        else:
+            row.append([start, neta - 1])
+    cells += [(ipt, s, e) for s, e in row]
+nc = len(cells)
+
+def merge(x):
+    """(nb, ...) per fine cell -> (nc, ...) per merged cell: every stored quantity is a sum."""
+    x = x.reshape(npt, neta, *x.shape[1:])
+    return np.array([x[ipt, s:e + 1].sum(0) for ipt, s, e in cells])
+
+sw_c, sw2_c, cnt_c, n_c, W_c, W2_c, Wlo_c, Whi_c, S1_c, S2_c, SG_c = map(
+    merge, (sw_f, sw2_f, cnt_f, n, W, W2, Wlo, Whi, S1, S2, SG))
+slice_c = merge(np.moveaxis(slice_tab, -1, 0))   # (nc, n_slices, 3)
+print("\n%d fine cells -> %d cells after merging |%s| to n_eff >= %g" % (nb, nc, var, a.min_neff))
+
+eta_edges_per_pt = [[float(ETA[0])] for _ in range(npt)]   # the merged |eta| edges of each pt_gen row
+for ipt, s, e in cells:
+    eta_edges_per_pt[ipt].append(float(ETA[e + 1]))
+binning = dict(var=var, min_neff=a.min_neff, pt_edges=[float(x) for x in PT], eta_edges_per_pt=eta_edges_per_pt)
+with open(os.path.join(outdir, "binning.json"), "w") as fh:
+    json.dump(binning, fh, indent=1)
+
 # --- per-cell summary numbers
 with np.errstate(invalid="ignore", divide="ignore"):
-    Win = W - Wlo - Whi
-    mean = S1 / Win
-    rms = np.sqrt(np.maximum(S2 / Win - mean ** 2, 0))
-    n_eff = np.where(W2 > 0, W ** 2 / np.where(W2 > 0, W2, 1), 0.0)
-    out_frac = (Wlo + Whi) / W
-    ptmean = SG / W
-median = np.full(nb, np.nan)
-for b in range(nb):
-    if W[b] > 0:
-        cum = Wlo[b] + np.r_[0.0, np.cumsum(sw_f[b])]
-        if cum[0] < 0.5 * W[b] <= cum[-1]:
-            median[b] = np.interp(0.5 * W[b], cum, R)
+    Win = W_c - Wlo_c - Whi_c
+    mean = S1_c / Win
+    rms = np.sqrt(np.maximum(S2_c / Win - mean ** 2, 0))
+    n_eff = np.where(W2_c > 0, W_c ** 2 / np.where(W2_c > 0, W2_c, 1), 0.0)
+    out_frac = (Wlo_c + Whi_c) / W_c
+    ptmean = SG_c / W_c
+median = np.full(nc, np.nan)
+for c in range(nc):
+    if W_c[c] > 0:
+        cum = Wlo_c[c] + np.r_[0.0, np.cumsum(sw_c[c])]
+        if cum[0] < 0.5 * W_c[c] <= cum[-1]:
+            median[c] = np.interp(0.5 * W_c[c], cum, R)
 
-# --- rebin the fine histograms to the plotted binning
+# --- rebin the fine response histograms to the plotted binning
 fine = nfine // a.bins
-sw = sw_f.reshape(nb, a.bins, fine).sum(-1)
-sw2 = sw2_f.reshape(nb, a.bins, fine).sum(-1)
-cnt = cnt_f.reshape(nb, a.bins, fine).sum(-1)
+sw = sw_c.reshape(nc, a.bins, fine).sum(-1)
+sw2 = sw2_c.reshape(nc, a.bins, fine).sum(-1)
+cnt = cnt_c.reshape(nc, a.bins, fine).sum(-1)
 edges = R[::fine]
 centres = 0.5 * (edges[1:] + edges[:-1])
 
 # --- summary table (stdout and summary.txt)
-lines = ["%-15s %-13s %10s %11s %9s %7s %7s %7s %6s  %s"
+lines = ["%-15s %-13s %10s %11s %9s %7s %7s %7s %6s  %-6s %s"
          % ("pt_gen [GeV]", "|%s|" % var, "rows", "sum w [pb]", "n_eff", "mean", "rms", "median", "out%",
-            "dominant H_T slice (share of sum w)")]
-for ipt in range(npt):
-    for ie in range(neta):
-        b = ipt * neta + ie
-        if n[b] == 0:
-            continue
-        j = int(np.argmax(slice_tab[:, 1, b]))
-        lines.append("%6g-%-8g %5.3g-%-7.3g %10d %11.4g %9.0f %7.4f %7.4f %7.4f %6.2f  %s (%.2f)"
-                     % (PT[ipt], PT[ipt + 1], ETA[ie], ETA[ie + 1], n[b], W[b], n_eff[b], mean[b], rms[b],
-                        median[b], 100 * out_frac[b], slice_names[j], slice_tab[j, 1, b] / W[b]))
+            "merged", "dominant H_T slice (share of sum w)")]
+for c, (ipt, s, e) in enumerate(cells):
+    if n_c[c] == 0:
+        continue
+    j = int(np.argmax(slice_c[c, :, 1]))
+    flag = ("%d" % (e - s + 1) if e > s else "") + (" LOW" if n_eff[c] < a.min_neff else "")
+    lines.append("%6g-%-8g %5.3g-%-7.3g %10d %11.4g %9.0f %7.4f %7.4f %7.4f %6.2f  %-6s %s (%.2f)"
+                 % (PT[ipt], PT[ipt + 1], ETA[s], ETA[e + 1], n_c[c], W_c[c], n_eff[c], mean[c], rms[c],
+                    median[c], 100 * out_frac[c], flag, slice_names[j], slice_c[c, j, 1] / W_c[c]))
 print("\n" + "\n".join(lines))
 with open(os.path.join(outdir, "summary.txt"), "w") as fh:
+    fh.write("# merged: number of fine |%s| cells combined; LOW: n_eff still below --min-neff %g\n"
+             % (var, a.min_neff))
     fh.write("\n".join(lines) + "\n")
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-# --- one figure per cell
+# --- one figure per (merged) cell
 n_fig = 0
-for ipt in range(npt):
-    for ie in range(neta):
-        b = ipt * neta + ie
-        ok = cnt[b] > 0
-        if n[b] < a.min_rows or not ok.any():
-            continue
-        norm = W[b] * np.diff(edges)
-        dens, err = sw[b] / norm, np.sqrt(sw2[b]) / norm
-        gauss = np.exp(-0.5 * ((centres - mean[b]) / rms[b]) ** 2) / (np.sqrt(2 * np.pi) * rms[b]) \
-            if rms[b] > 0 else np.full_like(centres, np.nan)
-        fig, axes = plt.subplots(1, 2, figsize=(11, 4.2))
-        for ax, log in zip(axes, (False, True)):
-            ax.errorbar(centres[ok], dens[ok], yerr=err[ok], fmt=".", ms=3, color="k", lw=0.8, label="jets (weighted)")
-            ax.plot(centres, gauss, color="C0", lw=1, label="Gaussian, mean %.3f rms %.3f" % (mean[b], rms[b]))
-            ax.set_xlabel(r"$p_T^{\rm rec}/p_T^{\rm gen}$")
-            ax.set_ylabel("1/N dN/dr")
-            if log:
-                ax.set_yscale("log"); ax.set_ylim(max(dens[ok].min() / 3, 1e-7), dens[ok].max() * 3)
-            ax.legend(fontsize=8)
-        fig.suptitle(r"UL18 MadGraph, $%g \leq p_T^{\rm gen} < %g$ GeV, $%g \leq |%s| < %g$;  %d jets, $n_{\rm eff}$ = %.0f"
-                     % (PT[ipt], PT[ipt + 1], ETA[ie], var, ETA[ie + 1], n[b], n_eff[b]), fontsize=10)
-        fig.tight_layout()
-        fig.savefig(os.path.join(outdir, "response_pt%02d_eta%02d__pt%g-%g_%s%g-%g.png"
-                                 % (ipt, ie, PT[ipt], PT[ipt + 1], var, ETA[ie], ETA[ie + 1])), dpi=150)
-        plt.close(fig)
-        n_fig += 1
-
-# --- overview: mean response and rms/mean vs <pt_gen>, one line per |eta| bin
-fig, axes = plt.subplots(1, 2, figsize=(11, 4.2))
-for ie in range(neta):
-    bs = np.arange(npt) * neta + ie
-    m = n[bs] >= max(a.min_rows, 1)
-    if not m.any():
+for c, (ipt, s, e) in enumerate(cells):
+    ok = cnt[c] > 0
+    if n_c[c] < a.min_rows or not ok.any():
         continue
-    lab = r"$%g \leq |%s| < %g$" % (ETA[ie], var, ETA[ie + 1])
-    axes[0].plot(ptmean[bs][m], mean[bs][m], "o-", ms=3, lw=1, label=lab)
-    axes[1].plot(ptmean[bs][m], (rms / mean)[bs][m], "o-", ms=3, lw=1, label=lab)
+    norm = W_c[c] * np.diff(edges)
+    dens, err = sw[c] / norm, np.sqrt(sw2[c]) / norm
+    gauss = np.exp(-0.5 * ((centres - mean[c]) / rms[c]) ** 2) / (np.sqrt(2 * np.pi) * rms[c]) \
+        if rms[c] > 0 else np.full_like(centres, np.nan)
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.2))
+    for ax, log in zip(axes, (False, True)):
+        ax.errorbar(centres[ok], dens[ok], yerr=err[ok], fmt=".", ms=3, color="k", lw=0.8, label="jets (weighted)")
+        ax.plot(centres, gauss, color="C0", lw=1, label="Gaussian, mean %.3f rms %.3f" % (mean[c], rms[c]))
+        ax.set_xlabel(r"$p_T^{\rm rec}/p_T^{\rm gen}$")
+        ax.set_ylabel("1/N dN/dr")
+        if log:
+            ax.set_yscale("log"); ax.set_ylim(max(dens[ok].min() / 3, 1e-7), dens[ok].max() * 3)
+        ax.legend(fontsize=8)
+    note = "  (%d |%s| cells merged)" % (e - s + 1, var) if e > s else ""
+    fig.suptitle(r"UL18 MadGraph, $%g \leq p_T^{\rm gen} < %g$ GeV, $%g \leq |%s| < %g$;  %d jets, $n_{\rm eff}$ = %.0f%s"
+                 % (PT[ipt], PT[ipt + 1], ETA[s], var, ETA[e + 1], n_c[c], n_eff[c], note), fontsize=10)
+    fig.tight_layout()
+    tag = "eta%02d" % s if s == e else "eta%02d-%02d" % (s, e)
+    fig.savefig(os.path.join(outdir, "response_pt%02d_%s__pt%g-%g_%s%g-%g.png"
+                             % (ipt, tag, PT[ipt], PT[ipt + 1], var, ETA[s], ETA[e + 1])), dpi=150)
+    plt.close(fig)
+    n_fig += 1
+
+# --- overview: mean response and rms/mean vs <pt_gen>; one line per distinct |eta| range,
+#     coloured by its |eta| centre (merged ranges only connect the pt rows that share them)
+series = {}
+for c, (ipt, s, e) in enumerate(cells):
+    if n_c[c] >= max(a.min_rows, 1):
+        series.setdefault((s, e), []).append(c)
+cmap = plt.get_cmap("viridis")
+fig, axes = plt.subplots(1, 2, figsize=(12, 4.6))
+for (s, e), cs in sorted(series.items()):
+    col = cmap(0.5 * (ETA[s] + ETA[e + 1]) / ETA[-1])
+    lab = r"$%g \leq |%s| < %g$" % (ETA[s], var, ETA[e + 1])
+    style = "o-" if s == e else "s--"
+    axes[0].plot(ptmean[cs], mean[cs], style, ms=3, lw=1, color=col, label=lab)
+    axes[1].plot(ptmean[cs], (rms / mean)[cs], style, ms=3, lw=1, color=col, label=lab)
 for ax, yl in zip(axes, ("weighted mean response", "rms / mean")):
     ax.set_xscale("log"); ax.set_xlabel(r"$\langle p_T^{\rm gen} \rangle$ [GeV]"); ax.set_ylabel(yl)
     ax.grid(alpha=0.3)
-axes[1].legend(fontsize=7)
-fig.suptitle("UL18 MadGraph, inside %g <= r < %g" % (edges[0], edges[-1]), fontsize=10)
+axes[1].legend(fontsize=6, ncol=2)
+fig.suptitle("UL18 MadGraph, inside %g <= r < %g;  |%s| merged to n_eff >= %g (squares: merged cells)"
+             % (edges[0], edges[-1], var, a.min_neff), fontsize=10)
 fig.tight_layout()
 fig.savefig(os.path.join(outdir, "summary.png"), dpi=150)
 plt.close(fig)
-print("\n%d cell figures, summary.png and summary.txt in %s" % (n_fig, outdir))
+print("\n%d cell figures, summary.png, summary.txt and binning.json in %s" % (n_fig, outdir))

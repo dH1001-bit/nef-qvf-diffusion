@@ -9,4 +9,5 @@ artifacts/
 build/
 dist/
 *.egg-info/
-*.png
+figs/
+*png
