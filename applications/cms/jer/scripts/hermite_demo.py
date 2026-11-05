@@ -232,7 +232,7 @@ if rows_file is None:
     rows = bin_rows = None
 else:
     rows = load(rows_file)
-    bin_rows = select(rows, genpt=(0.0, 500.0), abseta=(0.0, 0.5), max_dr=0.4, response=(0.0, 2.0))
+    bin_rows = select(rows, genpt=(300.0, 500.0), abseta=(0.0, 0.5))
     r, w = bin_rows.response, bin_rows.weight
     print("%s\n%d jets in the bin, sum w = %.4g pb, n_eff = %.0f" % (rows_file, len(r), w.sum(), bin_rows.n_eff))
 
@@ -294,7 +294,7 @@ else:
 
     # amplitude fit
 
-    J = 5
+    J = 6
     c_amp = np.zeros((J+1), dtype = complex)
     c_amp[0] = 1
     w_matrix = np.eye(2*J+1)
