@@ -64,6 +64,12 @@ Two fits per cell, both drawn over the data with the relative residual
     dlnL_eff = n_eff * (mean log-likelihood gain per unit weight over the
     Gaussian) is the gain in units of effective events.  --amp-degree 0
     switches the fit off.  Coefficients go to fits.json.
+  * Double-sided Crystal Ball (--no-dscb to skip): Gaussian core on
+    [-alpha_L, alpha_R] in z = (r - mu)/sigma, power-law tails with exponents
+    n_L, n_R outside, value and slope continuous; six parameters, all free,
+    same weighted likelihood on the same fine bins.  Normalised (in closed
+    form) on the histogram range --range, since the left power law would
+    otherwise reach below r = 0.  Its dlnL_eff is in summary.txt (dlnL_cb).
 
 As in plot_response.py: the grid is in GENERATOR pt (binning in reconstructed
 pt selects on the fluctuation being measured), no trigger is needed (the H_T
@@ -75,6 +81,7 @@ import argparse, glob, json, os, re, time
 from math import factorial
 import numpy as np
 from scipy.optimize import minimize
+from scipy.special import ndtr
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--pt-edges", nargs="+", type=float,
@@ -95,6 +102,11 @@ ap.add_argument("--amp-degree", type=int, default=8, help="highest Hermite degre
 ap.add_argument("--amp-ref", default="free-all", choices=("free-all", "free", "fixed"),
                 help="reference Gaussian of the amplitude fit: fitted with all c_n (free-all), fitted with "
                      "c_1 = c_2 = 0 (free; worse on toys), or fixed to the Gaussian MLE (fixed, as in hermite_demo)")
+ap.add_argument("--dscb", action=argparse.BooleanOptionalAction, default=True,
+                help="also fit a double-sided Crystal Ball in every cell (--no-dscb: skip the fit entirely)")
+ap.add_argument("--plot-dscb", action=argparse.BooleanOptionalAction, default=True,
+                help="draw the Crystal Ball curve and residuals in the cell plots (--no-plot-dscb: fit it, "
+                     "keep it in summary.txt and fits.json, but leave it out of the plots)")
 ap.add_argument("--res-max", type=float, default=1.0, help="y range +-res-max of the relative residual panels")
 ap.add_argument("--files", default="/scratch-cbe/users/robert.schoefbeck/Jets/jer_export_UL18/jer_UL18_HT*.npz")
 ap.add_argument("--max-files", type=int, default=None, help="only the first N files (a quick look; biased spectrum)")
@@ -317,31 +329,104 @@ if J > 0:
           % (J, a.amp_ref, np.isfinite(ll_amp).sum(), time.time() - t0, (np.isfinite(ll_amp) & ~amp_ok).sum()))
 dlnl = n_eff * (ll_amp - ll_gauss)               # log-likelihood gain in units of effective events
 
+# --- the double-sided Crystal Ball (DSCB), the usual full-shape function, for comparison
+def dscb_logf(z, aL, nL, aR, nR):
+    """log of the unnormalised DSCB in z = (r - mu)/sigma: exp(-z^2/2) on [-aL, aR], power-law tails
+    A (B -+ z)^-n outside, joined with continuous value and slope.  Written as
+    -a^2/2 - n log(1 + a(|z| - a)/n), the stable form of A (B - |z|)^-n."""
+    out = -0.5 * z * z
+    lo, hi = z < -aL, z > aR
+    out[lo] = -0.5 * aL * aL - nL * np.log1p(-aL * (z[lo] + aL) / nL)
+    out[hi] = -0.5 * aR * aR - nR * np.log1p(aR * (z[hi] - aR) / nR)
+    return out
+
+def dscb_integral(zl, zh, aL, nL, aR, nR):
+    """integral of exp(dscb_logf) over [zl, zh], piece by piece in closed form (n > 1)."""
+    tot = 0.0
+    lo, hi = max(zl, -aL), min(zh, aR)
+    if hi > lo:
+        tot += np.sqrt(2 * np.pi) * (ndtr(hi) - ndtr(lo))
+    if zl < -aL:                                  # u = 1 - aL (z + aL)/nL runs from u(zl) down to u(min(zh, -aL))
+        ua, ub = 1 - aL * (zl + aL) / nL, 1 - aL * (min(zh, -aL) + aL) / nL
+        tot += np.exp(-0.5 * aL * aL) * nL / aL / (nL - 1) * (ub ** (1 - nL) - ua ** (1 - nL))
+    if zh > aR:                                   # v = 1 + aR (z - aR)/nR
+        va, vb = 1 + aR * (max(zl, aR) - aR) / nR, 1 + aR * (zh - aR) / nR
+        tot += np.exp(-0.5 * aR * aR) * nR / aR / (nR - 1) * (va ** (1 - nR) - vb ** (1 - nR))
+    return tot
+
+def dscb_logpdf(x, p, lo, hi):
+    """log density in r of the DSCB with p = (mu, sigma, aL, nL, aR, nR), normalised on [lo, hi]:
+    the response histogram's range, so that a heavy left tail cannot put weight below r = 0."""
+    m, s, aL, nL, aR, nR = p
+    return dscb_logf((x - m) / s, aL, nL, aR, nR) - np.log(s) \
+        - np.log(dscb_integral((lo - m) / s, (hi - m) / s, aL, nL, aR, nR))
+
+def dscb_fit(x, wt, mu0, sig0, lo, hi):
+    """maximise sum wt log p over (mu, sigma, aL, nL, aR, nR); two starts (alpha = 1, 2), as alpha
+    and n are strongly correlated and the likelihood can have more than one minimum."""
+    wt = wt / wt.sum()
+    nll = lambda p: -float(wt @ dscb_logpdf(x, p, lo, hi))
+    bounds = [(lo, hi), (1e-3, hi - lo), (0.05, 10.0), (1.01, 200.0), (0.05, 10.0), (1.01, 200.0)]
+    best = None
+    for a0 in (1.0, 2.0):
+        res = minimize(nll, [mu0, sig0, a0, 3.0, a0, 3.0], method="L-BFGS-B", bounds=bounds)
+        if best is None or res.fun < best.fun:
+            best = res
+    return best.x, -float(best.fun), bool(best.success)
+
+cb_p = np.full((nc, 6), np.nan)
+ll_cb, cb_ok = np.full(nc, np.nan), np.zeros(nc, bool)
+ll_g = np.full(nc, np.nan)                       # the Gaussian MLE's mean log-likelihood (also without --amp-degree)
+if a.dscb:
+    t0 = time.time()
+    for c in range(nc):
+        m = sw_c[c] > 0
+        if n_c[c] < max(a.min_rows, 1) or not rms[c] > 0 or m.sum() < 6:
+            continue
+        cum = np.cumsum(sw_c[c]); q16, q50, q84 = np.interp([0.16, 0.5, 0.84], cum / cum[-1], rc)
+        cb_p[c], ll_cb[c], cb_ok[c] = dscb_fit(rc[m], sw_c[c][m], q50, max(0.5 * (q84 - q16), 1e-3), R[0], R[-1])
+        ll_g[c] = float(sw_c[c][m] @ log_normal(rc[m], mean[c], rms[c]) / sw_c[c][m].sum())
+    print("double-sided Crystal Ball fits: %d cells in %.0f s, %d without optimiser convergence"
+          % (np.isfinite(ll_cb).sum(), time.time() - t0, (np.isfinite(ll_cb) & ~cb_ok).sum()))
+dlnl_cb = n_eff * (ll_cb - ll_g)
+
 # --- summary table (stdout and summary.txt)
-lines = ["%-15s %-13s %10s %11s %9s %7s %7s %7s %9s %6s  %-6s %s"
-         % ("pt_gen [GeV]", "|%s|" % var, "rows", "sum w [pb]", "n_eff", "mean", "rms", "median", "dlnL_eff",
-            "out%", "merged", "dominant H_T slice (share of sum w)")]
+lines = ["%-15s %-13s %10s %11s %9s %7s %7s %7s %9s %9s %6s  %-6s %s"
+         % ("pt_gen [GeV]", "|%s|" % var, "rows", "sum w [pb]", "n_eff", "mean", "rms", "median", "dlnL_amp",
+            "dlnL_cb", "out%", "merged", "dominant H_T slice (share of sum w)")]
 for c, (ipt, s, e) in enumerate(cells):
     if n_c[c] == 0:
         continue
     j = int(np.argmax(slice_c[c, :, 1]))
     flag = ("%d" % (e - s + 1) if e > s else "") + (" LOW" if n_eff[c] < a.min_neff else "")
-    lines.append("%6g-%-8g %5.3g-%-7.3g %10d %11.4g %9.0f %7.4f %7.4f %7.4f %9.1f %6.2f  %-6s %s (%.2f)"
+    lines.append("%6g-%-8g %5.3g-%-7.3g %10d %11.4g %9.0f %7.4f %7.4f %7.4f %9.1f %9.1f %6.2f  %-6s %s (%.2f)"
                  % (PT[ipt], PT[ipt + 1], ETA[s], ETA[e + 1], n_c[c], W_c[c], n_eff[c], mean[c], rms[c],
-                    median[c], dlnl[c], 100 * out_frac[c], flag, slice_names[j], slice_c[c, j, 1] / W_c[c]))
+                    median[c], dlnl[c], dlnl_cb[c], 100 * out_frac[c], flag, slice_names[j],
+                    slice_c[c, j, 1] / W_c[c]))
 print("\n" + "\n".join(lines))
 with open(os.path.join(outdir, "summary.txt"), "w") as fh:
     fh.write("# merged: number of fine |%s| cells combined; LOW: n_eff still below --min-neff %g\n"
              % (var, a.min_neff))
+    fh.write("# dlnL_amp, dlnL_cb: log-likelihood gain over the Gaussian MLE in units of n_eff "
+             "(amplitude fit, double-sided Crystal Ball)\n")
     fh.write("\n".join(lines) + "\n")
-if J > 0:
-    fits = [dict(pt_gen=[float(PT[ipt]), float(PT[ipt + 1])], abs_eta=[float(ETA[s]), float(ETA[e + 1])],
-                 n_eff=float(n_eff[c]), mu=float(mean[c]), sigma=float(rms[c]), degree=J, ref=a.amp_ref,
-                 mu_ref=float(amp_mu[c]), sigma_ref=float(amp_sig[c]),
-                 c_re=[float(x) for x in amp_c[c].real], c_im=[float(x) for x in amp_c[c].imag],
-                 lnL_per_w_amp=float(ll_amp[c]), lnL_per_w_gauss=float(ll_gauss[c]), dlnL_eff=float(dlnl[c]),
-                 converged=bool(amp_ok[c]))
-            for c, (ipt, s, e) in enumerate(cells) if np.isfinite(ll_amp[c])]
+if J > 0 or a.dscb:
+    fits = []
+    for c, (ipt, s, e) in enumerate(cells):
+        if not (np.isfinite(ll_amp[c]) or np.isfinite(ll_cb[c])):
+            continue
+        d = dict(pt_gen=[float(PT[ipt]), float(PT[ipt + 1])], abs_eta=[float(ETA[s]), float(ETA[e + 1])],
+                 n_eff=float(n_eff[c]), mu=float(mean[c]), sigma=float(rms[c]))
+        if np.isfinite(ll_amp[c]):
+            d["amplitude"] = dict(degree=J, ref=a.amp_ref, mu_ref=float(amp_mu[c]), sigma_ref=float(amp_sig[c]),
+                                  c_re=[float(x) for x in amp_c[c].real], c_im=[float(x) for x in amp_c[c].imag],
+                                  lnL_per_w=float(ll_amp[c]), lnL_per_w_gauss=float(ll_gauss[c]),
+                                  dlnL_eff=float(dlnl[c]), converged=bool(amp_ok[c]))
+        if np.isfinite(ll_cb[c]):
+            d["dscb"] = dict(zip(("mu", "sigma", "alpha_L", "n_L", "alpha_R", "n_R"), map(float, cb_p[c])),
+                             range=[float(R[0]), float(R[-1])], lnL_per_w=float(ll_cb[c]),
+                             lnL_per_w_gauss=float(ll_g[c]), dlnL_eff=float(dlnl_cb[c]), converged=bool(cb_ok[c]))
+        fits.append(d)
     with open(os.path.join(outdir, "fits.json"), "w") as fh:
         json.dump(dict(var=var, fits=fits), fh, indent=1)
 
@@ -366,6 +451,10 @@ for c, (ipt, s, e) in enumerate(cells):
         models.append((amplitude_density(rc, amp_c[c], amp_mu[c], amp_sig[c]), "C3",
                        r"amplitude fit, $J$ = %d, $\sigma_{\rm ref}$ = %.3f, $\Delta\ln L_{\rm eff}$ = %.1f"
                        % (J, amp_sig[c], dlnl[c])))
+    if a.plot_dscb and np.isfinite(ll_cb[c]):
+        models.append((np.exp(dscb_logpdf(rc, cb_p[c], R[0], R[-1])), "C2",
+                       r"double-sided Crystal Ball, $\sigma$ = %.3f, $\Delta\ln L_{\rm eff}$ = %.1f"
+                       % (cb_p[c, 1], dlnl_cb[c])))
     fig, axes = plt.subplots(2, 2, figsize=(11, 6.2), sharex="col", gridspec_kw=dict(height_ratios=(3, 1)))
     for col, log in enumerate((False, True)):
         ax, rx = axes[0, col], axes[1, col]
