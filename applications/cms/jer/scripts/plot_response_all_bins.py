@@ -40,9 +40,23 @@ Two fits per cell, both drawn over the data with the relative residual
   * Gaussian: the full-range weighted MLE, mu = mean and sigma = rms
     (jerfit.fit_bin in closed form).
   * Amplitude fit (hermite_demo.py, 'amplitude fit'): the Born model
-    p(r) = N(r; mu, sigma) |h(r)|^2,  h = sum_{n<=J} c_n phi_n,  c complex, ||c|| = 1,
-    with mu, sigma fixed to the Gaussian MLE and all c_n free, maximising the
-    weighted log-likelihood.  phi_n(z) = He_n(z)/sqrt(n!) is the orthonormal
+    p(r) = N(r; mu_ref, sigma_ref) |h(r)|^2,  h = sum_{n<=J} c_n phi_n,  c complex,
+    ||c|| = 1, maximising the weighted log-likelihood.  hermite_demo fixes the
+    reference to the Gaussian MLE (--amp-ref fixed).  The default --amp-ref
+    free-all fits mu_ref and sigma_ref together with all c_n: the fit then
+    picks a reference WIDER than the rms and lets h narrow the core, which a
+    polynomial does easily, instead of building a tail on a Gaussian that
+    falls too fast, which it cannot.  Toy with a 12% exponential low-side
+    tail, 3e6 jets, model/truth at r = 0.3 (2e-3 of the peak) ... 1.2:
+        J = 6,  fixed     0.07 1.58 1.00 0.99 1.01 1.07
+        J = 10, free-all  1.02 1.03 1.01 1.01 1.00 0.99   (sigma_ref 0.139, rms 0.110)
+    --amp-ref free (c_1 = c_2 = 0, the 'degrees 1 and 2 duplicate mu and
+    sigma' rule of hermite_demo section 6) did WORSE than fixed there: the
+    duplication holds only near c = e_0; in |h|^2 degrees 1 and 2 mix with the
+    others, and without them the fit stalls on a too narrow reference.
+    free-all has flat directions (mu_ref, sigma_ref vs c_1, c_2), harmless for
+    the curve but meaning its parameters have no individual errors.
+    phi_n(z) = He_n(z)/sqrt(n!) is the orthonormal
     Hermite basis of N(mu, sigma^2) (hermite_demo section 1, = nefqvf
     Normal.basis), built here with numpy so no numba is needed.  The jets
     are not kept, so the likelihood is evaluated at the centres of the fine
@@ -77,7 +91,10 @@ ap.add_argument("--range", nargs=2, type=float, default=(0.0, 2.0), metavar=("LO
 ap.add_argument("--bins", type=int, default=100, help="response bins in the plots")
 ap.add_argument("--fine", type=int, default=10, help="stored sub-bins per plotted bin (median, rebinning)")
 ap.add_argument("--min-rows", type=int, default=1, help="skip cells with fewer jets")
-ap.add_argument("--amp-degree", type=int, default=6, help="highest Hermite degree J of the amplitude fit (0: no fit)")
+ap.add_argument("--amp-degree", type=int, default=8, help="highest Hermite degree J of the amplitude fit (0: no fit)")
+ap.add_argument("--amp-ref", default="free-all", choices=("free-all", "free", "fixed"),
+                help="reference Gaussian of the amplitude fit: fitted with all c_n (free-all), fitted with "
+                     "c_1 = c_2 = 0 (free; worse on toys), or fixed to the Gaussian MLE (fixed, as in hermite_demo)")
 ap.add_argument("--res-max", type=float, default=1.0, help="y range +-res-max of the relative residual panels")
 ap.add_argument("--files", default="/scratch-cbe/users/robert.schoefbeck/Jets/jer_export_UL18/jer_UL18_HT*.npz")
 ap.add_argument("--max-files", type=int, default=None, help="only the first N files (a quick look; biased spectrum)")
@@ -241,35 +258,52 @@ def log_normal(r, mu, sigma):
     z = (r - mu) / sigma
     return -0.5 * z * z - np.log(sigma) - 0.5 * np.log(2 * np.pi)
 
-def amplitude_fit(x, wt, mu, sigma, J):
-    """Born model N(x; mu, sigma) |sum_n c_n phi_n|^2 with complex c, ||c|| = 1, mu and sigma fixed;
-    maximise sum wt log p over the points x (here: fine-bin centres, wt: their summed weight).
+def amplitude_fit(x, wt, mu, sigma, J, ref="free-all"):
+    """Born model N(x; mu_ref, sigma_ref) |sum_n c_n phi_n|^2 with complex c, ||c|| = 1; maximise
+    sum wt log p over the points x (here: fine-bin centres, wt: their summed weight).
+    ref = 'fixed':    (mu_ref, sigma_ref) = (mu, sigma), all c_n free (hermite_demo's fit).
+    ref = 'free-all': (mu_ref, sigma_ref) fitted, started at (mu, sigma), all c_n free.  Flat
+                      directions (mu_ref, sigma_ref vs c_1, c_2): fine for the curve, no
+                      individual parameter errors.
+    ref = 'free':     as free-all with c_1 = c_2 = 0 (hermite_demo section 6); fits worse on toys.
     As in hermite_demo, c is passed to the optimiser as (Re c, Im c) and normalised inside.
-    Returns c (global phase fixed by c_0 real >= 0), the mean log-likelihood per unit weight of
-    the fit and of the Gaussian (c = e_0), and the optimiser's success flag."""
-    B = hermite_basis((x - mu) / sigma, J)        # built once; h = B @ c inside the objective
+    Returns c (degree 0 ... J, global phase fixed by c_0 real >= 0), mu_ref, sigma_ref, the mean
+    log-likelihood per unit weight of the fit and of the Gaussian N(mu, sigma), and the
+    optimiser's success flag."""
     wt = wt / wt.sum()
     ll_gauss = float(wt @ log_normal(x, mu, sigma))
+    act = np.r_[0, 3:J + 1] if ref == "free" else np.arange(J + 1)   # the active degrees
+    na = len(act)
+    free = ref != "fixed"
+    B_fixed = None if free else hermite_basis((x - mu) / sigma, J)    # fixed reference: built once
+
+    def unpack(v):                                # sigma_ref through its log: stays positive
+        return (v[0], np.exp(v[1]), v[2:]) if free else (mu, sigma, v)
 
     def nll(v):
-        h2 = np.abs(B @ (v[:J + 1] + 1j * v[J + 1:])) ** 2 / (v @ v)     # v @ v = ||c||^2
-        return -(ll_gauss + wt @ np.log(np.maximum(h2, 1e-300)))     # a root of h on a data point: log 0
+        m, s, u = unpack(v)
+        B = B_fixed if B_fixed is not None else hermite_basis((x - m) / s, J)[:, act]
+        h2 = np.abs(B @ (u[:na] + 1j * u[na:])) ** 2 / (u @ u)          # u @ u = ||c||^2
+        return -(wt @ (log_normal(x, m, s) + np.log(np.maximum(h2, 1e-300))))   # a root of h on a data point: log 0
 
     # start next to the Gaussian, c = e_0.  Not exactly on it: at real c the gradient of |h|^2 in
     # Im c is 2 Im(h) B = 0, so a start with Im c = 0 never leaves the real subspace (the complex
     # model is the sum of two squares h_re^2 + h_im^2, strictly more than one real square).
-    v0 = np.zeros(2 * (J + 1)); v0[0] = 1.0; v0[J + 2:] = 0.01
-    res = minimize(nll, v0, method="BFGS")
-    c = (res.x[:J + 1] + 1j * res.x[J + 1:]) / np.linalg.norm(res.x)
+    u0 = np.zeros(2 * na); u0[0] = 1.0; u0[na + 1:] = 0.01
+    res = minimize(nll, np.r_[mu, np.log(sigma), u0] if free else u0, method="BFGS")
+    m, s, u = unpack(res.x)
+    c = np.zeros(J + 1, complex)
+    c[act] = (u[:na] + 1j * u[na:]) / np.linalg.norm(u)
     if abs(c[0]) > 0:
         c = c * np.exp(-1j * np.angle(c[0]))     # |h|^2 does not see a global phase
-    return c, -float(res.fun), ll_gauss, bool(res.success)
+    return c, float(m), float(s), -float(res.fun), ll_gauss, bool(res.success)
 
 def amplitude_density(x, c, mu, sigma):
     return np.exp(log_normal(x, mu, sigma)) * np.abs(hermite_basis((x - mu) / sigma, len(c) - 1) @ c) ** 2
 
 J = a.amp_degree
 amp_c = np.full((nc, J + 1), np.nan, complex)
+amp_mu, amp_sig = np.full(nc, np.nan), np.full(nc, np.nan)
 ll_amp, ll_gauss, amp_ok = np.full(nc, np.nan), np.full(nc, np.nan), np.zeros(nc, bool)
 if J > 0:
     t0 = time.time()
@@ -277,9 +311,10 @@ if J > 0:
         m = sw_c[c] > 0
         if n_c[c] < max(a.min_rows, 1) or not rms[c] > 0 or m.sum() < 2:
             continue
-        amp_c[c], ll_amp[c], ll_gauss[c], amp_ok[c] = amplitude_fit(rc[m], sw_c[c][m], mean[c], rms[c], J)
-    print("\namplitude fits, J = %d: %d cells in %.0f s, %d without optimiser convergence"
-          % (J, np.isfinite(ll_amp).sum(), time.time() - t0, (np.isfinite(ll_amp) & ~amp_ok).sum()))
+        amp_c[c], amp_mu[c], amp_sig[c], ll_amp[c], ll_gauss[c], amp_ok[c] = \
+            amplitude_fit(rc[m], sw_c[c][m], mean[c], rms[c], J, a.amp_ref)
+    print("\namplitude fits, J = %d, reference %s: %d cells in %.0f s, %d without optimiser convergence"
+          % (J, a.amp_ref, np.isfinite(ll_amp).sum(), time.time() - t0, (np.isfinite(ll_amp) & ~amp_ok).sum()))
 dlnl = n_eff * (ll_amp - ll_gauss)               # log-likelihood gain in units of effective events
 
 # --- summary table (stdout and summary.txt)
@@ -301,7 +336,8 @@ with open(os.path.join(outdir, "summary.txt"), "w") as fh:
     fh.write("\n".join(lines) + "\n")
 if J > 0:
     fits = [dict(pt_gen=[float(PT[ipt]), float(PT[ipt + 1])], abs_eta=[float(ETA[s]), float(ETA[e + 1])],
-                 n_eff=float(n_eff[c]), mu=float(mean[c]), sigma=float(rms[c]), degree=J,
+                 n_eff=float(n_eff[c]), mu=float(mean[c]), sigma=float(rms[c]), degree=J, ref=a.amp_ref,
+                 mu_ref=float(amp_mu[c]), sigma_ref=float(amp_sig[c]),
                  c_re=[float(x) for x in amp_c[c].real], c_im=[float(x) for x in amp_c[c].imag],
                  lnL_per_w_amp=float(ll_amp[c]), lnL_per_w_gauss=float(ll_gauss[c]), dlnL_eff=float(dlnl[c]),
                  converged=bool(amp_ok[c]))
@@ -327,8 +363,9 @@ for c, (ipt, s, e) in enumerate(cells):
         models.append((np.exp(log_normal(rc, mean[c], rms[c])), "C0",
                        "Gaussian, mean %.3f rms %.3f" % (mean[c], rms[c])))
     if J > 0 and np.isfinite(ll_amp[c]):
-        models.append((amplitude_density(rc, amp_c[c], mean[c], rms[c]), "C3",
-                       r"amplitude fit, $J$ = %d, $\Delta\ln L_{\rm eff}$ = %.1f" % (J, dlnl[c])))
+        models.append((amplitude_density(rc, amp_c[c], amp_mu[c], amp_sig[c]), "C3",
+                       r"amplitude fit, $J$ = %d, $\sigma_{\rm ref}$ = %.3f, $\Delta\ln L_{\rm eff}$ = %.1f"
+                       % (J, amp_sig[c], dlnl[c])))
     fig, axes = plt.subplots(2, 2, figsize=(11, 6.2), sharex="col", gridspec_kw=dict(height_ratios=(3, 1)))
     for col, log in enumerate((False, True)):
         ax, rx = axes[0, col], axes[1, col]
