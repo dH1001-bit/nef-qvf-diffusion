@@ -11,3 +11,4 @@ dist/
 *.egg-info/
 figs/
 *png
+applications/cms/jer/doc/
