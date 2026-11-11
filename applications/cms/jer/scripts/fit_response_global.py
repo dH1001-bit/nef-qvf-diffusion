@@ -66,6 +66,12 @@ ap.add_argument("--fit-pt-range", nargs=2, type=float, default=None, metavar=("L
 ap.add_argument("--pt-weighting", default="neff", choices=("neff", "xsec"),
                 help="share of each pt bin in the likelihood: its n_eff (default) or its cross section "
                      "(xsec: the fit is dominated by the lowest pt bins)")
+ap.add_argument("--pt-power", type=float, default=1.0,
+                help="with --pt-weighting neff: pt bin j enters with total weight proportional to n_eff_j^power "
+                     "(1: its n_eff, the statistically natural choice; 0: every ln pt bin equally; 0.5: in "
+                     "between).  Weights are normalised to sum to sum_j n_eff_j.  n_eff*lnL of runs with "
+                     "different powers is not comparable; compare_global_cells.py evaluates every run on the "
+                     "same cross-section weighted data")
 ap.add_argument("--amp-degree", type=int, default=8, help="highest Hermite degree J")
 ap.add_argument("--K", nargs="+", type=int, default=[2],
                 help="highest Legendre order of c_n(ln pt): one value, or one per |eta| bin")
@@ -74,6 +80,13 @@ ap.add_argument("--ref-penalty", type=float, default=0.0,
                 help="lambda * sum_k |b_1k|^2 + |b_2k|^2 per unit weight: removes the flat directions "
                      "(mu, sigma) <-> (c_1, c_2); 0 = off")
 ap.add_argument("--maxiter", type=int, default=3000)
+ap.add_argument("--ftol", type=float, default=2.2e-9, help="L-BFGS-B relative tolerance on lnL/sum w (scipy default)")
+ap.add_argument("--gtol", type=float, default=1e-5, help="L-BFGS-B projected-gradient tolerance (scipy default)")
+ap.add_argument("--newton", type=int, default=30,
+                help="Newton polish after L-BFGS-B: at most this many steps (0: off).  L-BFGS-B crawls along the "
+                     "near-flat directions (mu_ref, sigma_ref vs c_1, c_2) and stops O(100) short in n_eff*lnL")
+ap.add_argument("--newton-tol", type=float, default=0.01,
+                help="stop the polish when the Newton decrement is below this, in units of n_eff*lnL")
 ap.add_argument("--eta-only", type=int, nargs="+", default=None, help="fit only these |eta| bin indices")
 ap.add_argument("--cell-pt-edges", nargs="+", type=float,
                 default=[97, 140, 200, 280, 400, 550, 750, 1000, 1400, 2000, 3500, 6500],
@@ -166,8 +179,13 @@ def make_data(ie, jsel):
     Sr, S2r = H["sw"][ie][jsel], H["sw2"][ie][jsel]
     Wtot_raw = Sr.sum(1) + H["Wlo"][ie][jsel] + H["Whi"][ie][jsel]
     W2tot_raw = S2r.sum(1) + H["W2lo"][ie][jsel] + H["W2hi"][ie][jsel]
-    s = np.where(W2tot_raw > 0, Wtot_raw / np.maximum(W2tot_raw, 1e-300), 0.0) if a.pt_weighting == "neff" \
-        else np.ones(len(jsel))
+    if a.pt_weighting == "neff":
+        ne_j = np.where(W2tot_raw > 0, Wtot_raw ** 2 / np.maximum(W2tot_raw, 1e-300), 0.0)
+        tgt = ne_j ** a.pt_power * (ne_j > 0)
+        tgt *= ne_j.sum() / max(tgt.sum(), 1e-300)          # total weight sum_j n_eff_j, as for power 1
+        s = np.where(Wtot_raw > 0, tgt / np.maximum(Wtot_raw, 1e-300), 0.0)
+    else:
+        s = np.ones(len(jsel))
     S, S2 = Sr * s[:, None], S2r * (s * s)[:, None]
     nz = S > 0
     jj, kk = np.nonzero(nz)
@@ -204,9 +222,48 @@ def fit(mod, th0, D, lam=0.0):
             f_ += lam * np.sum(th[pen] ** 2); g_ = g_.copy(); g_[pen] += 2 * lam * th[pen]
         return f_, g_
 
-    res = minimize(f, th0, jac=True, method="L-BFGS-B", options=dict(maxiter=a.maxiter, maxfun=4 * a.maxiter))
-    lnl = mod.lnl(res.x, D, grad=False)[0]
-    return res.x, lnl, bool(res.success), res.nit
+    res = minimize(f, th0, jac=True, method="L-BFGS-B", options=dict(maxiter=a.maxiter, maxfun=4 * a.maxiter,
+                                                                          ftol=a.ftol, gtol=a.gtol))
+    x, conv = res.x, bool(res.success)
+    nw = 0
+    if a.newton > 0:
+        # Newton polish on the numerical Hessian (from the analytic gradient).  Directions with
+        # |eigenvalue| < 1e-10 max are left alone (the flat ones); negative curvature is taken by
+        # its absolute value; backtracking line search on f.
+        scale = D["Wtot"].sum() ** 2 / D["W2tot"].sum()          # f -> n_eff * lnL units
+        fx, gx = f(x)
+        P = len(x)
+        for nw in range(1, a.newton + 1):
+            Hm = np.zeros((P, P))
+            for i in range(P):
+                h = 1e-5 * max(1.0, abs(x[i]))
+                e = np.zeros(P); e[i] = h
+                Hm[i] = (f(x + e)[1] - f(x - e)[1]) / (2 * h)
+            lam_, U = np.linalg.eigh(0.5 * (Hm + Hm.T))
+            keep = np.abs(lam_) > 1e-10 * np.abs(lam_).max()
+            gp = U.T @ gx
+            step = -U[:, keep] @ (gp[keep] / np.abs(lam_[keep]))
+            dec = float(-gx @ step)                              # Newton decrement^2 (> 0)
+            if scale * dec < a.newton_tol:
+                conv = True
+                break
+            t, ok = 1.0, False
+            for _ in range(30):
+                fn, gn = f(x + t * step)
+                if fn < fx:
+                    ok = True
+                    break
+                t *= 0.5
+            if not ok:
+                break
+            if os.environ.get("NEWTON_DEBUG"):
+                print("    newton %d: dec %.3g, t %.3g, gain %.3g, kept %d/%d, min|lam| %.3g, neg %d" % (
+                    nw, scale * dec, t, scale * (fx - fn), keep.sum(), P, np.abs(lam_[keep]).min(), (lam_ < 0).sum()), flush=True)
+            x, fx, gx = x + t * step, fn, gn
+        else:
+            conv = False
+    lnl = mod.lnl(x, D, grad=False)[0]
+    return x, lnl, conv, res.nit + nw
 
 
 def sandwich(mod, th, D):
