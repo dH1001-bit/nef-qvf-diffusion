@@ -87,6 +87,29 @@ def noised_pdf(y, mu, sigma, c, t):
     return np.exp(-0.5 * z * z - 0.5 * LOG2PI) / sigma * s
 
 
+def noised_logpdf(y, mu, sigma, c, t):
+    """ln p_t(y | x), in log space (no underflow far in the tails); shapes as noised_pdf."""
+    z = (np.asarray(y, float) - mu) / sigma
+    a = _coeffs_for(z, c, t)
+    s = np.sum(hermite(z, a.shape[-1] - 1) * a, -1)
+    return -0.5 * z * z - 0.5 * LOG2PI - np.log(sigma) + np.log(np.maximum(s, 1e-300))
+
+
+_GLX, _GLW = np.polynomial.legendre.leggauss(64)
+
+
+def log_tail(zb, c, side, length=25.0):
+    """ln P(z < zb) (side -1) or ln P(z >= zb) (side +1) of the Born density N(z)|h(z)|^2/||c||^2
+    per row (zb (rows,), c (rows, J+1)); Gauss-Legendre over ``length`` units beyond the boundary,
+    in log space.  The same rule as the network's censoring (jernn.model)."""
+    zb = np.asarray(zb, float)
+    lo = zb - length if side < 0 else zb
+    z = lo[:, None] + (_GLX[None, :] + 1) * (length / 2)
+    lq = noised_logpdf(z, 0.0, 1.0, c, 0.0) + np.log(_GLW * length / 2)[None, :]
+    m = lq.max(1, keepdims=True)
+    return (m + np.log(np.exp(lq - m).sum(1, keepdims=True)))[:, 0]
+
+
 def noised_score(y, mu, sigma, c, t):
     """d/dy ln p_t(y | x), exact (phi_k' = sqrt(k) phi_{k-1}); shapes as noised_pdf."""
     z = (np.asarray(y, float) - mu) / sigma

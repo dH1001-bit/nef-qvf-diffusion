@@ -31,16 +31,38 @@ Unbinned check (works with a handful of events): the weighted mean of ln p_bin(r
 events against its expectation under the model, E_p[ln p] +- sd_p[ln p] / sqrt(n_eff); z is the
 deviation in units of that error (|z| < 2 consistent).
 
+Independent local fit (--local-fit, event data only): the amplitude model of one cell, fitted to
+the events of this bin alone, to show what the data of the bin can determine by themselves:
+
+    p(r) = N(r; mu*, sigma*) |sum_n c_n phi_n(z)|^2 / ||c||^2,   n = 0 ... J (J of the global fit)
+
+with the reference (mu*, sigma*) fixed to the global model's mu(pt), sigma(pt) at the bin's mean
+ln pt, so that the c_n of both fits refer to the same Hermite basis and are directly comparable;
+only the 2J real amplitude parameters are free (b_0 = 1).  Weighted unbinned likelihood with the
+events at r >= 2 as a tail term, as in fit_response_global.py; best of two starts (the global c
+and a neutral one).  Errors: sandwich covariance, propagated to the normalised c_n.  The c_n are
+shown with c_0 real >= 0; |h|^2 does not change under c -> conj(c), so the local solution is shown
+in the conjugation that lies closer to the global one.  2 Delta lnL (local - global, in n_eff units)
+measures what the 2J extra parameters gain: about 2J if the global model is right.
+
 Outputs in --outdir (default <dir of --global>/narrow_bins):
-  narrow_eta<i>_pt<lo>-<hi>[_sub<N>].png   data and model, linear and log, pulls below
+  narrow_eta<i>_pt<lo>-<hi>[_sub<N>].png   data and model, linear and log; below the relative residual
+                                            data/model - 1 in every r bin with data (as in
+                                            compare_global_cells.py; y range +-res-max)
   narrow_bins.txt / .json                   per bin: events, n_eff, model median and
                                             sigma_68/median with errors, data median, lnL check
+  with --local-fit also
+  narrow_eta<i>_pt<lo>-<hi>[_sub<N>]_coef.png   c_n: global curves vs ln pt (+-1 sigma) and the local
+                                            fit of this bin (points)
+  narrow_local_vs_neff_eta<i>.png           (2 or more bins) local c_n of every bin against its
+                                            n_eff, global value at the same pt as a bar
 """
 import argparse, glob, json, os, sys
 import numpy as np
+from scipy.optimize import minimize
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from response_models import BornModel
+from response_models import BornModel, Grid
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--global", dest="glob", default="fig/global_receta/global_fits.json")
@@ -63,9 +85,24 @@ ap.add_argument("--npt", type=int, default=21, help="pt points of the mixture in
 ap.add_argument("--bins", type=int, default=40, help="r bins of the plot")
 ap.add_argument("--r-range", nargs=2, type=float, default=None, help="plot range (default: from the model)")
 ap.add_argument("--no-band", action="store_true")
+ap.add_argument("--res-max", type=float, default=0.5, help="y range +-res-max of the residual panels (data/model - 1)")
+ap.add_argument("--local-fit", action="store_true",
+                help="also fit the amplitudes c_n to the events of each bin alone and compare with the global c_n(pt)")
 ap.add_argument("--outdir", default=None)
 a = ap.parse_args()
 bins_pt = a.pt or [[300.0, 301.0]]
+
+
+def ptf(x):
+    """pt edge for labels and file names: up to 10 digits, so 300.5-300.50001 is not shown as 300.5-300.5"""
+    return "%.10g" % x
+
+
+# colours: global model dark blue / dark red (Re / Im), local fit bluish green / orange (Re / Im),
+# so that the fit is told by the hue and Re / Im by the marker; all fully saturated
+COL = dict(glob_re="#0033A0", glob_im="#C00000", loc_re="#009E73", loc_im="#E07000",
+           glob_dens="#D00000", loc_dens="#009E73")
+
 
 gdir = os.path.dirname(os.path.abspath(a.glob))
 outdir = a.outdir or os.path.join(gdir, "narrow_bins")
@@ -153,18 +190,28 @@ rng = np.random.default_rng(a.seed)
 def data_for(ie, lo, hi):
     """-> dict(kind, label, pt/r/w or S/S2/ptj/Wj) or None."""
     if EV is not None:
-        key = next((k for k in EV if k[0] == ie and np.isclose(k[1], lo) and np.isclose(k[2], hi)), None)
-        if key is None:
-            print("  no events stored for |eta| bin %d, %g-%g GeV (run with --files)" % (ie, lo, hi))
+        # a stored bin that contains [lo, hi) (the exact one, or a wider one: the events are cut
+        # down to [lo, hi), so a saved 300-301 bin serves 300-300.5, 300.2-300.3, ...)
+        cont = [k for k in EV if k[0] == ie and k[1] <= lo + 1e-9 and hi <= k[2] + 1e-9]
+        if not cont:
+            print("  no stored events cover |eta| bin %d, %s-%s GeV (stored: %s; run with --files)"
+                  % (ie, ptf(lo), ptf(hi), ", ".join("%s-%s" % (ptf(k[1]), ptf(k[2])) for k in EV if k[0] == ie)
+                     or "none"))
             return None
+        key = min(cont, key=lambda k: k[2] - k[1])
         pt, r, w = EV[key]
+        sel = (pt >= lo) & (pt < hi)
+        pt, r, w = pt[sel], r[sel], w[sel]
         n_all = len(pt)
         if a.subsample and a.subsample < len(pt):
             k = rng.choice(len(pt), a.subsample, replace=False)
             pt, r, w = pt[k], r[k], w[k]
         ins = (r >= R[0]) & (r < R[-1])
+        lo_, hi_ = r < R[0], r >= R[-1]
         lab = "data, %d events" % len(pt) + (" (random subset of %d)" % n_all if len(pt) < n_all else "")
-        return dict(kind="events", label=lab, pt=pt[ins], r=r[ins], w=w[ins], n_out=int((~ins).sum()))
+        return dict(kind="events", label=lab, pt=pt[ins], r=r[ins], w=w[ins], n_out=int((~ins).sum()),
+                    w_lo=float(w[lo_].sum()), w_hi=float(w[hi_].sum()),            # tail terms of --local-fit
+                    w2_lo=float((w[lo_] ** 2).sum()), w2_hi=float((w[hi_] ** 2).sum()))
     if H is not None:
         e0, e1 = eta_range(FITS[ie])
         ke = int(np.flatnonzero(np.isclose(H["eta_edges"][:-1], e0))[0])
@@ -220,7 +267,93 @@ def summary(mod, t, pts, f):
     return mix, np.array([q50, 0.5 * (q84 - q16) / q50])
 
 
-rows = []
+def global_coefs(mod, th, cov, pts):
+    """global c_n(pt) (rows; c_0 real >= 0), mu, sigma and the delta-method errors of Re, Im c_n."""
+    def vec(t):
+        c = mod.coefficients(t, pts)[0]
+        c = c * np.exp(-1j * np.angle(c[:, :1]))
+        return np.r_[c.real.ravel(), c.imag.ravel()]
+    c, mu, sig = mod.coefficients(th, pts)
+    c = c * np.exp(-1j * np.angle(c[:, :1]))
+    err = np.zeros(2 * c.size)
+    if not a.no_band:
+        Jm = np.zeros((len(err), len(th)))
+        for i in range(len(th)):
+            h = 1e-5 * max(1.0, abs(th[i]))
+            e = np.zeros(len(th)); e[i] = h
+            Jm[:, i] = (vec(th + e) - vec(th - e)) / (2 * h)
+        err = np.sqrt(np.maximum(np.einsum("ip,pq,iq->i", Jm, cov, Jm), 0))
+    return c, mu, sig, err[:c.size].reshape(c.shape), err[c.size:].reshape(c.shape)
+
+
+def local_fit(mod, th, cov, ptm, D):
+    """independent amplitude fit to the events of one bin (module docstring, --local-fit)."""
+    cg, mug, sigg, cg_re, cg_im = global_coefs(mod, th, cov, [ptm])
+    cg, mu0, s0 = cg[0], float(mug[0]), float(sigg[0])
+    lm = BornModel(mod.J, 0, 0, "const", (np.log(ptm), np.log(ptm)), mod.pt_scale)
+    w, r = D["w"], D["r"]
+    LD = dict(grid=Grid(lm, [ptm]), j=np.zeros(len(r), int), r=r, S=w, S2=w * w, lo=R[0], hi=R[-1],
+              Wlo=np.array([D["w_lo"]]), Whi=np.array([D["w_hi"]]),
+              W2lo=np.array([D["w2_lo"]]), W2hi=np.array([D["w2_hi"]]))
+    LD["Wtot"] = np.array([w.sum() + D["w_lo"] + D["w_hi"]])
+    W2tot = (w * w).sum() + D["w2_lo"] + D["w2_hi"]
+    Wsum, oc = LD["Wtot"][0], lm.oc
+    fixed = np.array([mu0, s0])                       # reference fixed to the global mu, sigma
+
+    def full(x):
+        return np.r_[fixed, x]
+
+    def f(x):
+        v, g = lm.lnl(full(x), LD)
+        return -v / Wsum, -g[oc:] / Wsum
+
+    def coef(x):
+        B = lm.unpack(full(x))[2][:, 0]
+        return B / np.linalg.norm(B)                   # b_0 = 1 real: c_0 real > 0 already
+
+    x_glob = lm.pack([mu0], [s0], cg[:, None])[oc:]
+    x_neut = lm.pack([mu0], [s0], np.r_[1.0, np.full(mod.J, 0.01j)])[oc:]
+    best = None
+    for x0 in (x_glob, x_neut):
+        res = minimize(f, x0, jac=True, method="L-BFGS-B", options=dict(maxiter=5000, maxfun=20000, gtol=1e-10, ftol=1e-14))
+        if np.isfinite(res.fun) and (best is None or res.fun < best.fun):
+            best = res
+    x = best.x
+    lnl_loc = -best.fun * Wsum
+    lnl_glob = lm.lnl(full(x_glob), LD, grad=False)[0]
+    neff_ = Wsum ** 2 / W2tot
+
+    # sandwich covariance of the free parameters, propagated to Re, Im of the normalised c_n
+    P = len(x)
+    Hm = np.zeros((P, P))
+    for i in range(P):
+        h = 1e-5 * max(1.0, abs(x[i]))
+        e = np.zeros(P); e[i] = h
+        Hm[i] = (f(x + e)[1] - f(x - e)[1]) * Wsum / (2 * h)
+    Hm = 0.5 * (Hm + Hm.T)
+    G, w2 = lm.scores(full(x), LD)
+    G = G[:, oc:]
+    V = (G * w2[:, None]).T @ G
+    Hi = np.linalg.pinv(Hm, rcond=1e-9, hermitian=True)
+    covx = Hi @ V @ Hi
+    Jc = np.zeros((2 * (mod.J + 1), P))
+    for i in range(P):
+        h = 1e-6 * max(1.0, abs(x[i]))
+        e = np.zeros(P); e[i] = h
+        cp, cm_ = coef(x + e), coef(x - e)
+        Jc[:, i] = np.r_[(cp - cm_).real, (cp - cm_).imag] / (2 * h)
+    ec = np.sqrt(np.maximum(np.einsum("ip,pq,iq->i", Jc, covx, Jc), 0))
+    c = coef(x)
+    if np.linalg.norm(np.conj(c) - cg) < np.linalg.norm(c - cg):     # same density, closer to global
+        c = np.conj(c)
+    dens = cond(lm.pdf_grid(full(x), [ptm], rc))[0]
+    return dict(c=c, c_re_err=ec[:mod.J + 1], c_im_err=ec[mod.J + 1:], c_glob=cg, c_glob_re_err=cg_re[0],
+                c_glob_im_err=cg_im[0], mu_ref=mu0, sigma_ref=s0, n_par=P, converged=bool(best.success),
+                lnl_local=float(lnl_loc), lnl_global=float(lnl_glob),
+                two_dlnl_neff=float(2 * (lnl_loc - lnl_glob) * neff_ / Wsum), n_eff=float(neff_), dens=dens)
+
+
+rows, local_rows = [], {}
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -312,17 +445,34 @@ for ie in a.eta_bin:
                                 mean_lnp=mlp, expected_lnp=Elp, expected_lnp_err=float(sdlp / np.sqrt(max(neff, 1))),
                                 z_lnp=float(zl))
         rows.append(info)
+        tag = "_sub%d" % a.subsample if a.subsample and D is not None and D["kind"] == "events" else ""
+
+        # ---- independent local amplitude fit to the events of this bin
+        LF = None
+        if a.local_fit:
+            if D is None or D["kind"] != "events" or Win <= 0:
+                print("  --local-fit needs events in the bin (--files or --events); skipped")
+            else:
+                LF = local_fit(mod, th, cov, float(np.exp(xbar)), D)
+                info["local_fit"] = {k: ([[float(z.real), float(z.imag)] for z in v] if np.iscomplexobj(v) else
+                                         v.tolist() if isinstance(v, np.ndarray) else v)
+                                     for k, v in LF.items() if k != "dens"}
+                local_rows.setdefault(ie, []).append(dict(LF, lo=lo, hi=hi, lnpt=xbar))
 
         # ---- figure
         fig, axs = plt.subplots(2, 2, figsize=(12, 6.8), sharex=True, gridspec_kw=dict(height_ratios=[3, 1.2]))
         lab_e = "%.1f < |%s| < %.1f" % (e0, var, e1)
         for col, logy in enumerate((False, True)):
             ax, axr = axs[0, col], axs[1, col]
-            ax.fill_between(Ec, dens_c - dens_e, dens_c + dens_e, step="mid", color="C3", alpha=0.25, lw=0,
+            ax.fill_between(Ec, dens_c - dens_e, dens_c + dens_e, step="mid", color=COL["glob_dens"], alpha=0.3, lw=0,
                             label="global model, $\\pm1\\sigma$ (fit covariance)")
-            ax.plot(rc[k0:k1], mix[k0:k1], color="C3", lw=1.4, label="global model, mixture over bin (%s)" % spec_lab)
+            ax.plot(rc[k0:k1], mix[k0:k1], color=COL["glob_dens"], lw=1.6,
+                    label="global model, mixture over bin (%s)" % spec_lab)
             ax.plot(rc[k0:k1], point[k0:k1], color="k", lw=0.9, ls="--",
                     label="$p(r\\,|\\,\\langle p_T\\rangle)$, max. rel. diff. %.1e" % dpoint)
+            if LF is not None:
+                ax.plot(rc[k0:k1], LF["dens"][k0:k1], color=COL["loc_dens"], lw=1.6,
+                        label="independent amplitude fit to this bin only (%d par.)" % LF["n_par"])
             if D is not None and Win > 0:
                 dw = E_[1] - E_[0]
                 y, ey = O / (Win * dw), np.sqrt(V) / (Win * dw)
@@ -330,15 +480,23 @@ for ie in a.eta_bin:
                 ax.errorbar(Ec[m], y[m], ey[m], fmt="ko", ms=3, capsize=0, label=D["label"] + ", $n_{eff}$ = %.0f" % neff)
                 if D["kind"] == "events" and len(D["r"]) <= 300 and not logy:   # few events: show each one
                     ax.plot(D["r"], np.zeros_like(D["r"]), "|", color="0.3", ms=12, mew=0.8, clip_on=False)
-                Ex = Win * coarse_mass(ref)
-                wbar = W2 / Win
-                pull = np.where(Ex > 0, (O - Ex) / np.sqrt(np.maximum(V, Ex * wbar)), np.nan)
-                axr.plot(Ec, pull, "ko", ms=3)
+                # relative residual data/model - 1 per r bin with data (convention of
+                # compare_global_cells.py), against the global model and (--local-fit) the local fit,
+                # in the colours of the curves above; side by side within each r bin
+                models = [(ref, COL["glob_dens"], "o", "data / global model $-$ 1")]
+                if LF is not None:
+                    models.append((LF["dens"], COL["loc_dens"], "s", "data / local fit $-$ 1"))
+                for i_m, (dm, cl, mk, lb) in enumerate(models):
+                    Ex = Win * coarse_mass(dm)
+                    with np.errstate(divide="ignore", invalid="ignore"):
+                        res = np.where(m & (Ex > 0), O / Ex - 1, np.nan)
+                    sh = (i_m - 0.5 * (len(models) - 1)) * 0.3 * dw
+                    axr.plot(Ec + sh, res, mk, color=cl, mec="k", mew=0.4, ms=4, label=lb, zorder=3 + i_m)
+                if not logy:
+                    axr.legend(fontsize=7, loc="upper left", ncol=len(models), framealpha=0.85)
             axr.axhline(0, color="gray", lw=0.8)
-            for v in (-2, 2):
-                axr.axhline(v, color="gray", lw=0.6, ls=":")
-            axr.set_ylim(-4, 4); axr.grid(alpha=0.3)
-            axr.set_ylabel("pull" if D is None or D["kind"] == "events" else "pull vs model\nover hist. bin")
+            axr.set_ylim(-a.res_max, a.res_max); axr.grid(alpha=0.3)
+            axr.set_ylabel("data/model $-$ 1" if D is None or D["kind"] == "events" else "data/model $-$ 1\n(model over hist. bin)")
             axr.set_xlabel("response $p_T^{rec}/p_T^{gen}$")
             ax.grid(alpha=0.3); ax.set_ylabel("density (conditional on $r \\in [0, 2)$)")
             if logy:
@@ -347,38 +505,137 @@ for ie in a.eta_bin:
             else:
                 ax.set_ylim(bottom=0)
                 ax.legend(fontsize=7.5, loc="upper left")
-        txt = ["model: median %.5f $\\pm$ %.1e" % (val[0], val_e[0]),
-               "         $\\sigma_{68}$/median %.5f $\\pm$ %.1e" % (val[1], val_e[1])]
-        if D is not None and Win > 0:
-            dd = info["data"]
-            txt += ["data: median %.4f $\\pm$ %.4f" % (dd["median"], dd["median_err"]),
-                    "$\\langle\\ln p\\rangle$: data %.3f, model %.3f $\\pm$ %.3f ($z$ = %.1f)"
-                    % (dd["mean_lnp"], Elp, dd["expected_lnp_err"], dd["z_lnp"])]
+        txt_mod = ["model: median %.5f $\\pm$ %.1e" % (val[0], val_e[0]),
+                   "model: $\\sigma_{68}$/median %.5f $\\pm$ %.1e" % (val[1], val_e[1])]
         if extrap:
-            txt.append("outside the fitted $p_T$ range: extrapolation")
-        axs[0, 0].text(0.98, 0.97, "\n".join(txt), transform=axs[0, 0].transAxes, va="top", ha="right", fontsize=8,
-                       bbox=dict(boxstyle="round", fc="white", alpha=0.85, lw=0.5))
-        fig.suptitle("global model (K=%d) in %g < $p_T^{gen}$ < %g GeV, %s  (no fit in this bin)"
-                     % (mod.K, lo, hi, lab_e), fontsize=11)
-        fig.tight_layout()
-        name = "narrow_eta%d_pt%g-%g%s.png" % (ie, lo, hi, "_sub%d" % a.subsample if a.subsample and D is not None
-                                                and D["kind"] == "events" else "")
+            txt_mod.append("outside the fitted $p_T$ range: extrapolation")
+        txt_dat = []
+        if D is not None:
+            dd = info["data"]
+            if D["kind"] == "events":
+                txt_dat.append("data in %s-%s GeV: %d events, $\\Sigma w$ = %.4g, $n_{eff}$ = %.1f"
+                               % (ptf(lo), ptf(hi),dd["n_events"], dd["sum_w"], dd["n_eff"]))
+            else:
+                txt_dat.append("data (enclosing hist. bin): $\\Sigma w$ = %.4g, $n_{eff}$ = %.1f"
+                               % (dd["sum_w"], dd["n_eff"]))
+        if D is not None and Win > 0:
+            txt_dat += ["data: median %.4f $\\pm$ %.4f" % (dd["median"], dd["median_err"]),
+                       "$\\langle\\ln p\\rangle$: data %.3f, model %.3f $\\pm$ %.3f ($z$ = %.1f)"
+                       % (dd["mean_lnp"], Elp, dd["expected_lnp_err"], dd["z_lnp"])]
+        if LF is not None:
+            txt_mod.append("local fit (%d par.): 2$\\Delta$lnL(local$-$global) = %.1f%s"
+                           % (LF["n_par"], LF["two_dlnl_neff"], "" if LF["converged"] else ", NOT converged"))
+        fig.suptitle("%s < $p_T^{gen}$ < %s GeV, %s  (global model, K=%d: evaluated, not refitted)"
+                     % (ptf(lo), ptf(hi), lab_e, mod.K), fontsize=11)
+        # summary in a strip below the panels (model under the left column, data under the right),
+        # so it can never hide data, whatever the shape of the distribution or the statistics
+        nl = max(len(txt_mod), len(txt_dat))
+        fig.tight_layout(rect=(0, 0.025 + 0.02 * nl, 1, 1))
+        box = dict(boxstyle="round", fc="white", lw=0.5)
+        for ax_col, t in ((axs[1, 0], txt_mod), (axs[1, 1], txt_dat)):
+            if t:
+                fig.text(ax_col.get_position().x0, 0.012, "\n".join(t), va="bottom", ha="left", fontsize=8, bbox=box)
+        name = "narrow_eta%d_pt%s-%s%s.png" % (ie, ptf(lo), ptf(hi), tag)
         fig.savefig(os.path.join(outdir, name), dpi=120)
         plt.close(fig)
-        print("|%s| bin %d, %g-%g GeV: %s" % (var, ie, lo, hi, name), flush=True)
+        print("|%s| bin %d, %s-%s GeV: %s" % (var, ie, ptf(lo), ptf(hi), name), flush=True)
+
+        # ---- coefficient figure: global c_n(pt) curves and the local fit of this bin
+        if LF is not None:
+            J = mod.J
+            xg = np.linspace(mod.x0, mod.x1, 80)
+            cgl, _, _, ere, eim = global_coefs(mod, th, cov, np.exp(xg))
+            nc_ = int(np.ceil((J + 1) / 3))
+            fig, axc = plt.subplots(nc_, 3, figsize=(12, 2.6 * nc_ + 0.8), sharex=True, squeeze=False)
+            for n in range(J + 1):
+                ax = axc.flat[n]
+                for part, col, ls, e, nm in ((np.real, COL["glob_re"], "-", ere, "Re"), (np.imag, COL["glob_im"], "--", eim, "Im")):
+                    yv = part(cgl[:, n])
+                    ax.fill_between(xg, yv - e[:, n], yv + e[:, n], color=col, alpha=0.3, lw=0)
+                    ax.plot(xg, yv, color=col, lw=1.6, ls=ls, label="global, " + nm)
+                ax.axvspan(np.log(lo), np.log(hi), color="0.6", alpha=0.4, lw=0)
+                ax.axvline(xbar, color="0.5", lw=0.6, ls=":")
+                ax.errorbar(xbar - 0.03, LF["c"][n].real, LF["c_re_err"][n], fmt="o", color=COL["loc_re"],
+                            mec="k", mew=0.6, ms=6, elinewidth=1.4, capsize=2.5, zorder=5, label="local fit, Re")
+                ax.errorbar(xbar + 0.03, LF["c"][n].imag, LF["c_im_err"][n], fmt="s", color=COL["loc_im"],
+                            mec="k", mew=0.6, ms=6, elinewidth=1.4, capsize=2.5, zorder=5, label="local fit, Im")
+                ax.axhline(0, color="gray", lw=0.6)
+                ax.set_ylim(-1.05, 1.05)                    # ||c|| = 1: |Re c_n|, |Im c_n| <= 1
+                ax.set_title("$c_{%d}$" % n, fontsize=10); ax.grid(alpha=0.3); ax.tick_params(labelsize=8)
+            for ax in axc.flat[J + 1:]:
+                ax.set_visible(False)
+            for ax in axc[-1]:
+                ax.set_xlabel("ln($p_T^{gen}$ / GeV)", fontsize=9)
+            axc.flat[0].legend(fontsize=7, loc="lower left")
+            warn = ("\n$n_{eff}$ < number of parameters: the local fit is not determined by the data, its "
+                    "(asymptotic) errors are not reliable" if LF["n_eff"] < LF["n_par"] else "")
+            fig.suptitle("amplitudes $c_n$ (phase: $c_0$ real), %s: global model (curves, $\\pm1\\sigma$) and an independent "
+                         "fit to the %d events in %s-%s GeV only\n($n_{eff}$ = %.1f, reference $\\mu$, $\\sigma$ fixed to the "
+                         "global values at $\\langle p_T\\rangle$ = %.4g GeV; 2$\\Delta$lnL(local$-$global) = %.1f for %d par.)%s"
+                         % (lab_e, info["data"]["n_events"], ptf(lo), ptf(hi), LF["n_eff"], np.exp(xbar),
+                            LF["two_dlnl_neff"], LF["n_par"], warn), fontsize=10, color="k")
+            fig.tight_layout(rect=(0, 0, 1, 0.92 if warn else 0.94))
+            fig.savefig(os.path.join(outdir, name.replace(".png", "_coef.png")), dpi=110)
+            plt.close(fig)
+
+# ------------------------------------------------------------------ local fits against n_eff
+for ie, LR in local_rows.items():
+    if len(LR) < 2:
+        continue
+    J = len(LR[0]["c"]) - 1
+    LR = sorted(LR, key=lambda q: q["n_eff"])
+    ne = np.array([q["n_eff"] for q in LR])
+    npar = LR[0]["n_par"]
+    fig, axc = plt.subplots(int(np.ceil((J + 1) / 3)), 3, figsize=(12, 2.6 * np.ceil((J + 1) / 3) + 0.8),
+                            sharex=True, squeeze=False)
+    for n in range(J + 1):
+        ax = axc.flat[n]
+        for k, (part, cl, cg_, mk) in enumerate(((np.real, COL["loc_re"], COL["glob_re"], "o"),
+                                                 (np.imag, COL["loc_im"], COL["glob_im"], "s"))):
+            sh = 1.06 if k else 1 / 1.06                   # Re left, Im right of each n_eff
+            yl = np.array([part(q["c"][n]) for q in LR])
+            el = np.array([q["c_re_err" if k == 0 else "c_im_err"][n] for q in LR])
+            yg = np.array([part(q["c_glob"][n]) for q in LR])
+            eg = np.array([q["c_glob_re_err" if k == 0 else "c_glob_im_err"][n] for q in LR])
+            ax.errorbar(ne * sh, yg, eg, fmt="_", color=cg_, ms=16, mew=2.5, capsize=0, zorder=3,
+                        label="global at the bin's $p_T$, %s" % ("Re" if k == 0 else "Im"))
+            ax.errorbar(ne * sh, yl, el, fmt=mk, color=cl, mec="k", mew=0.6, ms=5.5, elinewidth=1.4, capsize=2.5,
+                        zorder=5, label="local fit, %s" % ("Re" if k == 0 else "Im"))
+        ax.axhline(0, color="gray", lw=0.6)
+        ax.set_xscale("log"); ax.set_ylim(-1.05, 1.05)
+        ax.set_xlim(min(ne.min(), npar) / 2, ne.max() * 2)
+        ax.axvspan(ax.get_xlim()[0], npar, color="0.85", lw=0, zorder=0,
+                   label="$n_{eff}$ < %d par.: local fit not determined" % npar)
+        ax.set_title("$c_{%d}$" % n, fontsize=10); ax.grid(alpha=0.3); ax.tick_params(labelsize=8)
+    for ax in axc.flat[J + 1:]:
+        ax.set_visible(False)
+    for ax in axc[-1]:
+        ax.set_xlabel("$n_{eff}$ of the bin", fontsize=9)
+    axc.flat[0].legend(fontsize=7, loc="lower left")
+    ea, eb = eta_range(FITS[ie])
+    fig.suptitle("amplitudes $c_n$ (phase: $c_0$ real), %.1f < |%s| < %.1f: independent fit to each bin's events "
+                 "(points) vs the global model at the same $p_T$ (bars)\nbins: %s GeV"
+                 % (ea, var, eb, ", ".join("%s-%s" % (ptf(q["lo"]), ptf(q["hi"])) for q in LR)), fontsize=10)
+    fig.tight_layout(rect=(0, 0, 1, 0.94))
+    fig.savefig(os.path.join(outdir, "narrow_local_vs_neff_eta%d.png" % ie), dpi=110)
+    plt.close(fig)
+    print("|%s| bin %d: narrow_local_vs_neff_eta%d.png" % (var, ie, ie), flush=True)
 
 # ------------------------------------------------------------------ text and json
 L = ["# global model %s in narrow pt_gen bins; densities conditional on r in [0, 2)" % os.path.abspath(a.glob),
      "# med/s68: model median and sigma_68/median (+- delta method); data median; <ln p> test: z = (data - model)/err",
-     "%-9s %-13s %8s %9s %18s %18s %16s %7s %s" % ("|eta|", "pt_gen", "events", "n_eff", "model median",
-                                                   "model s68/med", "data median", "z(lnp)", "note")]
+     "# 2dlnL(loc): 2 (lnL_local - lnL_global) in n_eff units of the independent local amplitude fit (--local-fit)",
+     "%-9s %-17s %8s %9s %18s %18s %16s %7s %11s %s" % ("|eta|", "pt_gen", "events", "n_eff", "model median",
+                                                        "model s68/med", "data median", "z(lnp)", "2dlnL(loc)", "note")]
 for c in rows:
-    d, m = c.get("data", {}), c["model"]
-    L.append("%4.1f-%-4.1f %6g-%-6g %8s %9.1f %9.5f+-%.1e %9.5f+-%.1e %8.4f+-%.4f %7.2f %s" % (
-        c["abs_eta"][0], c["abs_eta"][1], c["pt_gen"][0], c["pt_gen"][1], d.get("n_events", "hist" if d else "-"),
+    d, m, lf = c.get("data", {}), c["model"], c.get("local_fit", {})
+    L.append("%4.1f-%-4.1f %-17s %8s %9.1f %9.5f+-%.1e %9.5f+-%.1e %8.4f+-%.4f %7.2f %11s %s" % (
+        c["abs_eta"][0], c["abs_eta"][1], "%s-%s" % (ptf(c["pt_gen"][0]), ptf(c["pt_gen"][1])), d.get("n_events", "hist" if d else "-"),
         d.get("n_eff", np.nan), m["median"], m["median_err"], m["s68_over_median"], m["s68_over_median_err"],
         d.get("median", np.nan), d.get("median_err", np.nan), d.get("z_lnp", np.nan),
-        "extrapolated" if c["extrapolated"] else ""))
+        "%.1f/%d" % (lf["two_dlnl_neff"], lf["n_par"]) if lf else "-",
+        " ".join(t for t in ("extrapolated" if c["extrapolated"] else "",
+                             "local fit not converged" if lf and not lf["converged"] else "") if t)))
 print("\n".join(L))
 with open(os.path.join(outdir, "narrow_bins.txt"), "w") as fh:
     fh.write("\n".join(L) + "\n")

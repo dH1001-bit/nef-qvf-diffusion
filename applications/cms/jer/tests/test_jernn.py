@@ -76,6 +76,21 @@ def test_score_is_derivative_of_log_density():
         assert np.allclose(noised_score(y, 1, 0.1, C, t), num, rtol=1e-5, atol=1e-3)
 
 
+def test_logpdf_and_tails():
+    from jernn.diffusion import log_tail, noised_logpdf
+    y = np.linspace(0.7, 1.3, 61)
+    assert np.allclose(noised_logpdf(y, 1, 0.1, C, 0.2), np.log(noised_pdf(y, 1, 0.1, C, 0.2)))
+    assert np.isfinite(noised_logpdf(np.array([0.0]), 1, 0.01, C, 0.0)).all()        # z = -100: no underflow
+    c = np.stack([C, C[::-1]])
+    lo, hi = np.array([-0.8, -1.5]), np.array([1.1, 0.4])
+    yg = np.linspace(0, 1, 20001)
+    for i in range(2):
+        z = lo[i] + (hi[i] - lo[i]) * yg
+        p_in = np.trapezoid(noised_pdf(z, 0, 1, c[i], 0.0), z)
+        tot = p_in + np.exp(log_tail(lo[i:i + 1], c[i:i + 1], -1)) + np.exp(log_tail(hi[i:i + 1], c[i:i + 1], +1))
+        assert np.isclose(tot[0], 1.0, atol=1e-8)
+
+
 def test_rows_shapes():
     c = np.stack([C, C * 1j, C[::-1]])
     p_rows = noised_pdf(np.array([1.0, 1.1, 0.9]), np.ones(3), np.full(3, 0.1), c, 0.2)
