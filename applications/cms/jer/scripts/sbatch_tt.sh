@@ -16,5 +16,5 @@
 cd "${SLURM_SUBMIT_DIR:-.}"
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-4}
 echo "fit_response_tt.py $@"; date
-time python3 -u scripts/fit_response_tt.py "$@"
+time python3 -u fit_response_tt.py "$@"
 echo FIT_DONE; date

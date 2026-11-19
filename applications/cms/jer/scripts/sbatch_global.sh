@@ -16,5 +16,5 @@
 . /software/f2022/software/mamba/24.3.0-0/etc/profile.d/conda.sh && conda activate hephy-ml-gpu-claude
 cd "${SLURM_SUBMIT_DIR:-.}"
 echo "fit_response_global.py $@"; date
-time python3 -u scripts/fit_response_global.py "$@"
+time python3 -u fit_response_global.py "$@"
 echo FIT_DONE; date

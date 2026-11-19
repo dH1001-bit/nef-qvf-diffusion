@@ -16,5 +16,5 @@
 cd "${SLURM_SUBMIT_DIR:-.}"
 IN=$1; OUT=$2; shift 2
 echo "rows $IN -> $OUT  ($@)"; date
-time python3 -u scripts/fit_response.py "$IN" --out "$OUT" "$@"
+time python3 -u fit_response.py "$IN" --out "$OUT" "$@"
 echo FIT_DONE; date

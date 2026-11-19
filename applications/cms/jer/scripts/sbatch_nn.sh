@@ -23,5 +23,5 @@
 cd "${SLURM_SUBMIT_DIR:-.}"
 python3 -c "import torch; print('torch', torch.__version__, 'cuda', torch.cuda.is_available())"
 echo "train_nn.py $@"; date
-time python3 -u scripts/train_nn.py "$@"
+time python3 -u train_nn.py "$@"
 echo FIT_DONE; date
