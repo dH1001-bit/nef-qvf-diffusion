@@ -26,6 +26,15 @@ with weights, with far less noise when the weights span orders of magnitude (HT 
 --sampling uniform: plain shuffled epochs with weights.  The validation loss is always the exact
 weighted mean over the validation rows.
 
+Schedule.  One-cycle learning rate over --epochs x steps-per-epoch steps; an epoch is one pass
+over the training rows, so the number of steps grows with the data.  Scale --epochs with the
+data (10 % of the UL18 export: 40 epochs = 230 k steps; the full export: --epochs 6-8 is already
+more), so that the run reaches the annealing phase where most of the final precision comes from.
+
+Stability.  A batch with a non-finite loss or gradient is skipped (no update); too many of them
+(--max-skip) or a non-finite validation loss stop the run with a message, best.pt being the last
+good epoch.  The counts are in history.json ("skipped") and summary.txt.
+
 Outputs in --outdir: best.pt (lowest validation loss), last.pt, history.json, loss.png,
 summary.txt.  Load with jernn.model.Predictor.load(path).
 """
@@ -70,6 +79,9 @@ g.add_argument("--steps-per-epoch", type=int, default=None,
 g.add_argument("--lr", type=float, default=2e-3)
 g.add_argument("--weight-decay", type=float, default=0.0)
 g.add_argument("--patience", type=int, default=6, help="stop after this many epochs without improvement")
+g.add_argument("--max-skip", type=float, default=1e-3,
+               help="batches with a non-finite loss or gradient are skipped (no update); stop when more than "
+                    "this fraction of an epoch's batches is skipped, or the validation loss is not finite")
 g.add_argument("--seed", type=int, default=0)
 g.add_argument("--device", default="auto", help="auto, cpu, cuda")
 g.add_argument("--threads", type=int, default=None)
@@ -153,8 +165,8 @@ def validate():
     return -s_lp / s_w
 
 
-hist = dict(epoch=[], train_nll=[], val_nll=[], lr=[], seconds=[])
-best, bad = np.inf, 0
+hist = dict(epoch=[], train_nll=[], val_nll=[], lr=[], seconds=[], skipped=[])
+best, bad, stop_reason = np.inf, 0, None
 info = dict(target=target.spec, conds=[f.spec for f in conds], cuts=[c.spec for c in cuts], data=meta,
             args=vars(a), y_quantiles=[float(q16), float(q50), float(q84)])
 v0 = validate()
@@ -164,7 +176,7 @@ for ep in range(a.epochs):
     te = time.time()
     perm = tr_t[torch.randperm(len(tr), generator=torch.Generator().manual_seed(a.seed + ep)).to(tr_t.device)] \
         if a.sampling == "uniform" else None
-    run, nrun = 0.0, 0
+    run, nrun, nskip, ndone = 0.0, 0, 0, 0
     for st in range(steps):
         idx = batch_indices(st, perm)
         if len(idx) == 0:
@@ -173,23 +185,47 @@ for ep in range(a.epochs):
         ww = (sign_t[idx] if a.sampling == "weighted" else Wt[idx]).to(dev, non_blocking=True)
         loss, nll = loss_fn(model, yy, xx, ww, a.norm_penalty, a.ref_penalty)
         opt.zero_grad(set_to_none=True)
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 10.0)
-        opt.step(); sched.step()
-        run += float(nll); nrun += 1
+        ndone += 1
+        # guard: one non-finite batch must not reach the weights (an inf loss gives NaN gradients,
+        # and AdamW would turn every parameter into NaN).  Skip the update, keep the schedule.
+        ok = bool(torch.isfinite(loss))
+        if ok:
+            loss.backward()
+            gnorm = torch.nn.utils.clip_grad_norm_(model.parameters(), 10.0)
+            ok = bool(torch.isfinite(gnorm))
+        if ok:
+            opt.step()
+            run += float(nll.detach()); nrun += 1
+        else:
+            nskip += 1
+            if nskip <= 5:
+                print("  epoch %d step %d: non-finite loss/gradient (loss %s), batch skipped"
+                      % (ep + 1, st, float(loss)), flush=True)
+        sched.step()
+        if nskip > max(10, a.max_skip * steps):
+            stop_reason = "%d of %d batches non-finite in epoch %d" % (nskip, ndone, ep + 1)
+            break
     v = validate()
     hist["epoch"].append(ep + 1); hist["train_nll"].append(run / max(nrun, 1)); hist["val_nll"].append(v)
     hist["lr"].append(sched.get_last_lr()[0]); hist["seconds"].append(time.time() - te)
+    hist["skipped"].append(nskip)
+    if not np.isfinite(v):
+        stop_reason = stop_reason or "validation loss not finite in epoch %d" % (ep + 1)
     flag = ""
-    if v < best - 1e-6:
+    if np.isfinite(v) and v < best - 1e-6:
         best, bad, flag = v, 0, "  *"
         save(os.path.join(a.outdir, "best.pt"), model, dict(info, epoch=ep + 1, val_nll=v))
     else:
         bad += 1
-    print("epoch %3d  train %.6f  val %.6f  lr %.2e  %5.0f s%s" % (ep + 1, hist["train_nll"][-1], v,
-                                                                  hist["lr"][-1], hist["seconds"][-1], flag), flush=True)
+    print("epoch %3d  train %.6f  val %.6f  lr %.2e  %5.0f s%s%s"
+          % (ep + 1, hist["train_nll"][-1], v, hist["lr"][-1], hist["seconds"][-1],
+             "  (%d batches skipped)" % nskip if nskip else "", flag), flush=True)
     with open(os.path.join(a.outdir, "history.json"), "w") as fh:
         json.dump(hist, fh, indent=1)
+    if stop_reason:
+        print("STOP (training unstable): %s; best.pt is the last good epoch.  Lower --lr or check the rows."
+              % stop_reason, flush=True)
+        break
     if bad >= a.patience:
         print("no improvement for %d epochs: stop" % a.patience)
         break
@@ -203,8 +239,10 @@ L = ["# train_nn.py %s" % " ".join(sys.argv[1:]),
                                                                         meta["n_eff"], neff_va),
      "parameters %d, J %d, width %d, depth %d" % (sum(p.numel() for p in model.parameters()), a.J, a.width, a.depth),
      "validation nll per unit weight: start %.6f, best %.6f (epoch %d); n_eff(val) * gain = %.1f"
-     % (v0, best, hist["epoch"][int(np.argmin(hist["val_nll"]))], neff_va * (v0 - best)),
-     "training time %.0f s" % (time.time() - t_train)]
+     % (v0, best, (hist["epoch"][int(np.nanargmin(hist["val_nll"]))] if np.isfinite(best) else 0), neff_va * (v0 - best)),
+     "training time %.0f s; %d epochs of %d steps, %d batches skipped (non-finite)%s"
+     % (time.time() - t_train, len(hist["epoch"]), steps, sum(hist["skipped"]),
+        "; STOPPED: " + stop_reason if stop_reason else "")]
 print("\n".join(L))
 with open(os.path.join(a.outdir, "summary.txt"), "w") as fh:
     fh.write("\n".join(L) + "\n")

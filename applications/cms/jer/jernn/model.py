@@ -41,6 +41,30 @@ def hermite(z, J):
     return torch.stack(out, -1)
 
 
+def hermite_scaled(z, J):
+    """(psi, ln s) with phi_n(z) = s^J psi_n(z), s = max(1, |z|), computed without ever forming
+    phi_n itself, so nothing overflows in float32 for any finite z (with J = 8, |h|^2 ~ z^16
+    overflows float32 for |z| >~ 500).
+
+    Recurrence for chi_n = phi_n / s^n (all |chi_n| <= O(1)):
+        chi_{n+1} = ((z/s) chi_n - sqrt(n) chi_{n-1} / s^2) / sqrt(n+1),
+    then psi_n = chi_n * s^(n-J) (factors <= 1).  For |z| <= 1, s = 1 and psi = phi."""
+    s = torch.clamp(z.abs(), min=1.0)
+    u, v = z / s, 1.0 / (s * s)
+    chi = [torch.ones_like(z)]
+    if J >= 1:
+        chi.append(u)
+    for n in range(1, J):
+        chi.append((u * chi[n] - math.sqrt(n) * v * chi[n - 1]) / math.sqrt(n + 1))
+    inv = 1.0 / s
+    psi = [None] * (J + 1)
+    f = torch.ones_like(z)                      # s^(n-J), built from n = J downwards
+    for n in range(J, -1, -1):
+        psi[n] = chi[n] * f
+        f = f * inv
+    return torch.stack(psi, -1), torch.log(s)
+
+
 class BornNet(nn.Module):
     def __init__(self, n_cond, J=8, width=128, depth=4, x_mean=None, x_std=None, y_loc=1.0, y_scale=0.1,
                  y_range=None):
@@ -81,13 +105,15 @@ class BornNet(nn.Module):
 
     # --- log density
     def _log_shape(self, z, cre, cim, lnorm):
-        """ln N(z) + ln |h(z)|^2 - ln ||c||^2, z (..., ) with c broadcast over the leading axis."""
-        Phi = hermite(z, self.J)
+        """ln N(z) + ln |h(z)|^2 - ln ||c||^2, z (..., ) with c broadcast over the leading axis.
+        h is evaluated in the scaled form h = s^J g (hermite_scaled): finite for every finite z."""
+        Psi, lns = hermite_scaled(z, self.J)
         if z.dim() == 2:                        # (rows, nodes)
             cre, cim = cre[:, None, :], cim[:, None, :]
             lnorm = lnorm[:, None]
-        hr, hi = (Phi * cre).sum(-1), (Phi * cim).sum(-1)
-        return -0.5 * z * z - 0.5 * LOG2PI + torch.log(hr * hr + hi * hi + 1e-30) - lnorm
+        gr, gi = (Psi * cre).sum(-1), (Psi * cim).sum(-1)
+        return (-0.5 * z * z - 0.5 * LOG2PI + 2 * self.J * lns + torch.log(gr * gr + gi * gi + 1e-30)
+                - lnorm)
 
     def _log_tail(self, zb, side, cre, cim, lnorm):
         """ln P(z < zb) (side -1) or ln P(z >= zb) (side +1)."""
@@ -98,7 +124,7 @@ class BornNet(nn.Module):
     def log_prob(self, y, X, params=None):
         """ln p(y | X) per row; censored rows (outside y_range) get ln P(outside)."""
         mu, sig, cre, cim = self(X) if params is None else params
-        lnorm = torch.log((cre * cre + cim * cim).sum(-1))
+        lnorm = torch.log((cre * cre + cim * cim).sum(-1) + 1e-30)      # floor: c = 0 gives no +inf
         z = (y - mu) / sig
         lp = self._log_shape(z, cre, cim, lnorm) - torch.log(sig)
         if self.y_range is not None:

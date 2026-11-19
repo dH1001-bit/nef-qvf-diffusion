@@ -185,3 +185,31 @@ def test_network_density_normalised_and_censoring():
         lpc, _ = m.log_prob(torch.tensor([0.1, 1.9]), X[i:i + 1].repeat(2, 1))
         total = p_in + torch.exp(lpc.double()).sum()
         assert abs(float(total) - 1.0) < 2e-3
+
+
+def test_log_shape_overflow_safe():
+    """The scaled Hermite form equals the direct one where both are finite, and stays finite (with
+    finite gradients) far beyond the float32 overflow of |h|^2 ~ z^16 (|z| >~ 500)."""
+    torch = pytest.importorskip("torch")
+    from jernn.model import BornNet, hermite, hermite_scaled
+    torch.manual_seed(1)
+    J = 8
+    z = torch.linspace(-30, 30, 601, dtype=torch.float64)
+    Psi, lns = hermite_scaled(z, J)
+    assert torch.allclose(Psi * torch.exp(J * lns)[:, None], hermite(z, J), rtol=1e-10, atol=1e-12)
+    m = BornNet(2, J=J, width=16, depth=2)
+    cre = torch.randn(1, J + 1).repeat(5, 1).requires_grad_()
+    cim = torch.randn(1, J + 1).repeat(5, 1)
+    lnorm = torch.log((cre ** 2 + cim ** 2).sum(-1))
+    zz = torch.tensor([0.3, -40.0, 1e3, -1e4, 1e5])
+    lp = m._log_shape(zz, cre, cim, lnorm)
+    assert torch.isfinite(lp).all()
+    lp.sum().backward()
+    assert torch.isfinite(cre.grad).all()
+    # moderate z: float64 reference from the direct form
+    zr = torch.tensor([0.3, -40.0], dtype=torch.float64)
+    c64 = (cre[:2].detach().double(), cim[:2].double())
+    h = hermite(zr, J)
+    ref = -0.5 * zr ** 2 - 0.5 * np.log(2 * np.pi) + torch.log((h * c64[0]).sum(-1) ** 2 + (h * c64[1]).sum(-1) ** 2) \
+        - torch.log((c64[0] ** 2 + c64[1] ** 2).sum(-1))
+    assert torch.allclose(lp[:2].double(), ref, rtol=1e-5)
