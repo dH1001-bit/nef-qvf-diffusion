@@ -91,6 +91,20 @@ def test_logpdf_and_tails():
         assert np.isclose(tot[0], 1.0, atol=1e-8)
 
 
+@pytest.mark.parametrize("t", [0.0, 0.4])
+def test_closed_form_cdf(t):
+    from jernn.diffusion import noised_cdf
+    y = np.linspace(0.0, 2.0, 40001)
+    p = noised_pdf(y, 1.0, 0.1, C, t)
+    num = np.concatenate([[0.0], np.cumsum(0.5 * (p[1:] + p[:-1]) * np.diff(y))])
+    F = noised_cdf(y, 1.0, 0.1, C, t)
+    assert np.allclose(F, num + F[0], atol=1e-9)
+    assert abs(F[0]) < 1e-12 and abs(F[-1] - 1) < 1e-12           # 10 sigma: the full mass
+    c = np.stack([C, C[::-1]])                                     # rows x (rows, m) grid shapes
+    Fg = noised_cdf(np.array([[0.9, 1.0, 1.1]] * 2), np.ones((2, 1)), np.full((2, 1), 0.1), c, t)
+    assert Fg.shape == (2, 3) and np.isclose(Fg[0, 1], noised_cdf(1.0, 1.0, 0.1, C, t))
+
+
 def test_rows_shapes():
     c = np.stack([C, C * 1j, C[::-1]])
     p_rows = noised_pdf(np.array([1.0, 1.1, 0.9]), np.ones(3), np.full(3, 0.1), c, 0.2)

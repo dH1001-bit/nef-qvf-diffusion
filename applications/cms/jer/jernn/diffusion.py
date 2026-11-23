@@ -24,6 +24,7 @@ exact, positive, and with an exact score d/dy ln p_t.  This is the repository's 
 """
 from __future__ import annotations
 
+from functools import lru_cache
 from math import lgamma
 
 import numpy as np
@@ -43,6 +44,7 @@ def hermite(z, K):
     return out
 
 
+@lru_cache(maxsize=None)
 def linearisation(J):
     """Lambda[m, n, k] = E[phi_m phi_n phi_k] under N(0, 1), m, n <= J, k <= 2J:
     He_m He_n = sum_j C(m,j) C(n,j) j! He_{m+n-2j}."""
@@ -54,6 +56,7 @@ def linearisation(J):
                 # C(m,j) C(n,j) j! sqrt(k!) / sqrt(m! n!), in logs
                 L[m, n, k] = np.exp(lgamma(m + 1) + lgamma(n + 1) - lgamma(j + 1) - lgamma(m - j + 1)
                                     - lgamma(n - j + 1) + 0.5 * (lgamma(k + 1) - lgamma(m + 1) - lgamma(n + 1)))
+    L.flags.writeable = False                        # cached: shared, read only
     return L
 
 
@@ -108,6 +111,39 @@ def log_tail(zb, c, side, length=25.0):
     lq = noised_logpdf(z, 0.0, 1.0, c, 0.0) + np.log(_GLW * length / 2)[None, :]
     m = lq.max(1, keepdims=True)
     return (m + np.log(np.exp(lq - m).sum(1, keepdims=True)))[:, 0]
+
+
+try:
+    from scipy.special import ndtr as _ndtr
+except ImportError:                                  # pragma: no cover
+    from math import erfc as _erfc
+    _ndtr = np.vectorize(lambda x: 0.5 * _erfc(-x / np.sqrt(2.0)))
+
+
+def noised_cdf(y, mu, sigma, c, t):
+    """P(Y_t <= y | x) in closed form; shapes as noised_pdf.
+
+    With p_t = N(z)/sigma sum_k a_k e^{-kt} phi_k(z) and int_{-inf}^z N(u) phi_k(u) du =
+    -N(z) phi_{k-1}(z)/sqrt(k) (k >= 1; from (N He_{k-1})' = -N He_k):
+
+        F_t(y) = Phi(z) - N(z) sum_{k>=1} a_k e^{-kt} phi_{k-1}(z) / sqrt(k),   a_0 = 1."""
+    z = (np.asarray(y, float) - mu) / sigma
+    return cdf_from_a(z, _coeffs_for(z, c, t))
+
+
+def cdf_from_a(z, a):
+    """The same in the reference frame, from density coefficients a (already shaped to z, as
+    _coeffs_for returns them; e.g. a[:, None, :] for z (rows, m)): for repeated evaluations of
+    the same rows (bisection) without recomputing a."""
+    K = a.shape[-1] - 1
+    P = hermite(z, K - 1)
+    s = np.sum(P * (a[..., 1:] / np.sqrt(np.arange(1, K + 1))), -1)
+    return _ndtr(z) - np.exp(-0.5 * z * z - 0.5 * LOG2PI) * s
+
+
+def pdf_from_a(z, a):
+    """N(z) sum_k a_k phi_k(z): the density in z (divide by sigma for y)."""
+    return np.exp(-0.5 * z * z - 0.5 * LOG2PI) * np.sum(hermite(z, a.shape[-1] - 1) * a, -1)
 
 
 def noised_score(y, mu, sigma, c, t):
