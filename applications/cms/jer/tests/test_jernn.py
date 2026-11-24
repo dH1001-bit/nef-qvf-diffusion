@@ -227,3 +227,57 @@ def test_log_shape_overflow_safe():
     ref = -0.5 * zr ** 2 - 0.5 * np.log(2 * np.pi) + torch.log((h * c64[0]).sum(-1) ** 2 + (h * c64[1]).sum(-1) ** 2) \
         - torch.log((c64[0] ** 2 + c64[1] ** 2).sum(-1))
     assert torch.allclose(lp[:2].double(), ref, rtol=1e-5)
+
+
+def test_mono_penalty_network():
+    """Tail monotonicity penalty of the network: zero for the initial Gaussian, equal to the sum of
+    squared rises of ln p computed independently (numpy, jernn.diffusion), gradients reach the net."""
+    torch = pytest.importorskip("torch")
+    from jernn.diffusion import noised_logpdf
+    from jernn.model import BornNet, mono_penalty
+    torch.manual_seed(3)
+    J, n, npts, core = 6, 5, 40, 2.0
+    m = BornNet(2, J=J, width=16, depth=2, y_loc=1.0, y_scale=0.1, y_range=(0.0, 2.0)).double()
+    X = torch.randn(n, 2, dtype=torch.float64)
+    cen = torch.full((n,), 1.0, dtype=torch.float64)
+    wid = torch.full((n,), 0.08, dtype=torch.float64)
+    with torch.no_grad():
+        m.head.weight.zero_()                               # exactly the initial Gaussian
+    assert float(mono_penalty(m, X, cen, wid, core, npts)) == 0.0
+    with torch.no_grad():
+        m.head.weight.normal_(0.0, 0.5)                     # a wiggly density
+    pen = mono_penalty(m, X, cen, wid, core, npts)
+    assert float(pen) > 0
+    pen.backward()
+    assert all(torch.isfinite(p.grad).all() for p in m.parameters() if p.grad is not None)
+    assert m.head.weight.grad.abs().sum() > 0
+    # numpy reference
+    with torch.no_grad():
+        mu, sig, cre, cim = (t.numpy() for t in m(X))
+    c = cre + 1j * cim
+    t = np.linspace(0, 1, npts + 1)
+    ref = 0.0
+    for i in range(n):
+        for a_, b_, s in ((1.0 + core * 0.08, 2.0, 1.0), (0.0, 1.0 - core * 0.08, -1.0)):
+            yg = a_ + (b_ - a_) * t
+            lp = noised_logpdf(yg, mu[i], sig[i], c[i], 0.0)
+            ref += 0.08 / ((b_ - a_) / npts) * np.sum(np.maximum(s * np.diff(lp), 0) ** 2)
+    assert np.isclose(float(pen), ref / n, rtol=1e-6)
+
+
+def test_tail_reference_cells():
+    """per-cell median and sigma_68 of y, and draws uniform over the cells."""
+    rng = np.random.default_rng(0)
+    n = 40000
+    X = np.c_[rng.uniform(0, 1, n), rng.uniform(0, 1, n)].astype(np.float32)
+    y = 1.0 + 0.5 * X[:, 0] + (0.05 + 0.1 * X[:, 1]) * rng.standard_normal(n)
+    ref = np.arange(n // 2)
+    c, w, cell = jd.tail_reference(X, y, np.ones(n), ref, nbins=4, min_rows=100)
+    sel = (cell == cell[0])
+    yy = y[sel & (np.arange(n) < n // 2)]
+    assert np.isclose(c[0], np.median(yy), atol=0.01)
+    assert np.isclose(w[0], 0.5 * np.subtract(*np.quantile(yy, [0.84, 0.16])), rtol=0.05)
+    p = jd.cell_prob(cell, ref)
+    assert p[n // 2:].sum() == 0 and np.isclose(p.sum(), 1)
+    per_cell = np.bincount(cell[ref], p[ref])
+    assert np.allclose(per_cell[per_cell > 0], 1.0 / np.sum(per_cell > 0))

@@ -150,6 +150,40 @@ def loss_fn(model, y, X, w, norm_penalty=1e-3, ref_penalty=0.0):
     return loss, nll
 
 
+def mono_penalty(model, X, center, width, core=2.0, npts=64, params=None):
+    """Tail monotonicity penalty per row, averaged over the rows (the same as
+    fit_response_global.py --mono-penalty):
+
+        width * sum_g relu(+-(ln p(y_g+1) - ln p(y_g)))^2 / dy  ~  width * int relu(+-d ln p/dy)^2 dy
+
+    on npts + 1 equally spaced points from center + core * width to the upper end of the model's
+    y_range (sign +: ln p must not rise with y) and from the lower end to center - core * width
+    (sign -: must not fall).  Without a y_range the tails reach 8 widths beyond the core.  Zero for
+    tails that fall monotonically (plateaus allowed): only secondary maxima cost.  ln ||c||^2 and
+    ln sigma are the same at both points of a pair and drop out.  center, width (rows,): the data's
+    median and sigma_68 per row (jernn.data.tail_reference), constants for the gradient."""
+    mu, sig, cre, cim = model(X) if params is None else params
+    lo, hi = model.y_range if model.y_range is not None else (None, None)
+    t = torch.linspace(0.0, 1.0, npts + 1, device=X.device, dtype=mu.dtype)
+    zero = torch.zeros_like(mu)
+    total = zero
+    for sgn in (1.0, -1.0):
+        if sgn > 0:
+            a = center + core * width
+            b = torch.full_like(a, hi) if hi is not None else center + 8 * width
+        else:
+            b = center - core * width
+            a = torch.full_like(b, lo) if lo is not None else center - 8 * width
+        span = b - a
+        ok = span > 2e-3 * width
+        y = a[:, None] + span.clamp(min=1e-6)[:, None] * t[None, :]
+        lp = model._log_shape((y - mu[:, None]) / sig[:, None], cre, cim, zero)
+        d = sgn * (lp[:, 1:] - lp[:, :-1])
+        dy = span.clamp(min=1e-6) / npts
+        total = total + torch.where(ok, width / dy * (torch.relu(d) ** 2).sum(-1), zero)
+    return total.mean()
+
+
 # ------------------------------------------------------------------ checkpoints
 def save(path, model, info):
     torch.save(dict(kind="jernn-born", version=1, config=model.config(), state=model.state_dict(), info=info), path)

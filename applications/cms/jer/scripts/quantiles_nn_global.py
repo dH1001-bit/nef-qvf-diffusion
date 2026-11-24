@@ -4,6 +4,12 @@
 
     python3 scripts/quantiles_nn_global.py --model fig/nn_pt_eta_full2/best.pt --global K3=fig/global_K3/global_fits.json
     python3 scripts/quantiles_nn_global.py --model ... --global K3=... --eta-edges 2.5 2.6 2.7 2.8 2.9 3.0 3.1 3.2
+    python3 scripts/quantiles_nn_global.py --model J4=fig/nn_J4/best.pt J8=fig/nn_J8/best.pt J12=fig/nn_J12/best.pt \
+        --global K3=fig/global_K3/global_fits.json --outdir fig/nn_J_scan        # several networks (J or lambda scan)
+
+Several networks (--model label=path ...): they must have been trained on the same rows (same
+files, cuts, fraction, seed, validation fraction, conditions); all are evaluated on the same
+validation rows, the first is the reference of the likelihood comparison.
 
 The rows are the network's validation rows (read again with the training's own arguments; --files
 overrides, then all rows of those files are used).  In every cell the three distributions are
@@ -32,7 +38,18 @@ Outputs in --outdir (default <dir of --model>/quantiles):
                         the data (numbers in %, colour = pull) and the chi^2/ndf of the tail
                         calibration: where a model differs from the data beyond statistics
   quantiles.txt/.json   all numbers per cell; per |eta| slice and tail level the chi^2/ndf of the
-                        tail-calibration pulls; per |eta| slice the accuracy summary
+                        tail-calibration pulls; per |eta| slice the accuracy summary; the paired
+                        likelihood of the networks; the wiggle counts
+  likelihood.png        networks: n_eff * (lnL - lnL of the first network) per |eta| slice, row by row
+                        on the same rows, with the paired statistical error
+  wiggles.png           per model and |eta| slice: secondary maxima of p(r | x) per row (>1 % in ln p),
+                        and the bumps of the cell mixtures that the data contradict / confirm
+
+Wiggle check (as for the global fits): in every cell the model mixture is binned in r (0.01) and
+compared with the cell's data histogram.  For every secondary maximum of the binned mixture (>5 %
+above the dip towards the main peak) the rise dip -> bump (3 bins each) is compared, model and
+data, in units of the data's statistical error: "visible" = model rise > 1 sigma, "confirmed" =
+data rise > 2 sigma, "contradicted" = data - model < -2 sigma.
 Inputs are only read.
 """
 import argparse, json, os, sys
@@ -53,7 +70,8 @@ ZG = np.array([-3.0902, -2.3263, -1.6449, -0.9945, 0.0, 0.9945, 1.6449, 2.3263, 
 TAILS = (0, 1, 2, 6, 7, 8)                                            # indices of the tail levels in PQ
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--model", required=True, help="checkpoint of train_nn.py")
+ap.add_argument("--model", nargs="+", required=True,
+                help="checkpoint(s) of train_nn.py, path or label=path; the first is the likelihood reference")
 ap.add_argument("--global", dest="glob", nargs="*", default=[], help="global_fits.json, or label=path (several)")
 ap.add_argument("--files", nargs="+", default=None, help="other files (default: the training's, validation split)")
 ap.add_argument("--pt-edges", nargs="+", type=float,
@@ -67,12 +85,30 @@ ap.add_argument("--model-rows", type=int, default=5000, help="rows per cell for 
 ap.add_argument("--max-rows", type=int, default=None, help="random subset of the evaluation rows")
 ap.add_argument("--device", default="cpu")
 ap.add_argument("--seed", type=int, default=1)
+ap.add_argument("--wiggle-rows", type=int, default=20, help="rows per cell for counting secondary maxima")
 ap.add_argument("--outdir", default=None)
 a = ap.parse_args()
 
-P = Predictor.load(a.model, a.device)
+NETS = {}
+for s_ in a.model:
+    lab, _, path = s_.rpartition("=")
+    lab = lab or ("network" if len(a.model) == 1 else os.path.basename(os.path.dirname(os.path.abspath(path))))
+    if lab in NETS:
+        raise SystemExit("--model: label %s twice" % lab)
+    NETS[lab] = Predictor.load(path, a.device)
+NETLAB = list(NETS)
+P = NETS[NETLAB[0]]
 info, A = P.info, P.info["args"]
-outdir = a.outdir or os.path.join(os.path.dirname(os.path.abspath(a.model)), "quantiles")
+SAME = ("files", "fraction", "max_rows", "seed", "val_frac", "weight")
+for lab, Pn in NETS.items():
+    An = Pn.info["args"]
+    bad = [k for k in SAME if a.files is None and An.get(k) != A.get(k)]
+    if Pn.info["target"] != info["target"] or Pn.info["conds"] != info["conds"] or Pn.info["cuts"] != info["cuts"]:
+        bad.append("target/conds/cuts")
+    if bad:
+        raise SystemExit("--model %s: trained on other rows than %s (%s): the comparison would not be on the same "
+                         "rows" % (lab, NETLAB[0], ", ".join(bad)))
+outdir = a.outdir or os.path.join(os.path.dirname(os.path.abspath(a.model[0].rpartition("=")[2])), "quantiles")
 os.makedirs(outdir, exist_ok=True)
 rng = np.random.default_rng(a.seed)
 
@@ -110,6 +146,24 @@ print("%d rows (%s), n_eff %.0f" % (len(y), "validation split" if a.files is Non
       flush=True)
 ie = np.searchsorted(ETA, aeta, side="right") - 1
 ip = np.searchsorted(np.log(PT), lpt, side="right") - 1
+
+# ------------------------------------------------------------------ paired likelihood of the networks
+LP = {lab: Pn.log_prob(y, Xn).astype(np.float64) for lab, Pn in NETS.items()}
+LIK = {}
+for k in list(range(len(ETA) - 1)) + [-1]:
+    m = np.flatnonzero((ie == k) if k >= 0 else (ie >= 0) & (ie < len(ETA) - 1))
+    if len(m) == 0:
+        continue
+    ww = w[m]; W = ww.sum(); ne = jd.n_eff(ww)
+    key = "%.2f-%.2f" % (ETA[k], ETA[k + 1]) if k >= 0 else "all"
+    LIK[key] = dict(n_eff=float(ne), rows=int(len(m)), nets={})
+    for lab in NETLAB:
+        d = LP[lab][m] - LP[NETLAB[0]][m]
+        md = float(ww @ d / W)
+        err = float(np.sqrt(np.sum(ww ** 2 * (d - md) ** 2)) / abs(W))
+        LIK[key]["nets"][lab] = dict(lnl_per_event=float(ww @ LP[lab][m] / W), dlnl_per_event=md, err=err,
+                                     dlnl_neff=ne * md, err_neff=ne * err)
+del LP
 
 # ------------------------------------------------------------------ mixtures (closed-form CDF)
 def model_rows(mu, sig, c, s):
@@ -158,6 +212,53 @@ def derived(Q):
     return np.r_[med, s68 / med, [(Q[i] - med) / s68 for i in TAILS]]
 
 
+RW = np.linspace(0.0, 2.0, 8001)                                       # grid for secondary maxima
+EW = np.linspace(0.0, 2.0, 201)                                        # 0.01 bins for the data check
+
+
+def count_maxima(p):
+    """secondary maxima of each row of p (on RW) that rise > 1 % in ln p above the lowest point
+    between them and the main peak."""
+    lp = np.log(np.maximum(p, 1e-300))
+    n = 0
+    for row in lp:
+        i0 = int(np.argmax(row))
+        pk = np.flatnonzero((row[1:-1] > row[:-2]) & (row[1:-1] >= row[2:])) + 1
+        for i in pk:
+            if i != i0 and row[i] - row[min(i, i0):max(i, i0) + 1].min() > 0.01:
+                n += 1
+    return n
+
+
+def wiggles(M, yc, wc):
+    """secondary maxima per row (first --wiggle-rows model rows of the cell) and the data check of
+    the bumps of the cell's binned mixture: list of (model rise, data rise) in data sigma."""
+    mu, sig, A_, s_ = M
+    nr = min(a.wiggle_rows, len(mu))
+    p = pdf_from_a((RW[None, :] - mu[:nr, None]) / sig[:nr, None], A_[:nr]) / sig[:nr, None]
+    nmax = count_maxima(p)
+    W = wc.sum()
+    pred = np.diff(mix_cdf(EW, M)) * W
+    sw = np.histogram(yc, EW, weights=wc)[0]
+    sw2 = np.histogram(yc, EW, weights=wc * wc)[0]
+    wbar = (wc * wc).sum() / W
+    pk = int(np.argmax(pred))
+    cases = []
+    for i in range(2, len(pred) - 2):
+        if i == pk or not (pred[i] > pred[i - 1] and pred[i] >= pred[i + 1]):
+            continue
+        lo, hi = sorted((i, pk))
+        d = lo + int(np.argmin(pred[lo:hi + 1]))
+        if pred[i] / max(pred[d], 1e-300) < 1.05:
+            continue
+        win = lambda c_: slice(max(c_ - 1, 0), c_ + 2)                # noqa: E731
+        pb, pd = pred[win(i)].sum(), pred[win(d)].sum()
+        db, dd = sw[win(i)].sum(), sw[win(d)].sum()
+        e = np.hypot(np.sqrt(max(sw2[win(i)].sum(), pb * wbar)), np.sqrt(max(sw2[win(d)].sum(), pd * wbar)))
+        cases.append([float((pb - pd) / e), float((db - dd) / e)])
+    return dict(maxima_per_row=nmax / max(nr, 1), bumps=cases)
+
+
 PANELS = ["median $Q_{50}$", "$\\sigma_{68}$ / median"] + ["$(Q_{%g} - Q_{50})/\\sigma_{68}$" % (100 * PQ[i]) for i in TAILS]
 GAUSS = [None, None] + [ZG[i] for i in TAILS]
 
@@ -179,8 +280,9 @@ for k in range(len(ETA) - 1):
         sub = m[rng.choice(len(m), min(a.model_rows, len(m)), replace=True, p=pw)] if len(m) > a.model_rows else m
         s = np.sign(w[sub]) if len(m) > a.model_rows else w[sub]
         models = {}
-        mu, sig, c = P.params(Xn[sub])
-        models["network"] = model_rows(mu, sig, c, s)
+        for lab, Pn in NETS.items():
+            mu, sig, c = Pn.params(Xn[sub])
+            models[lab] = model_rows(mu, sig, c, s)
         for g in GL:
             ig = np.searchsorted(g["edges"], aeta[sub], side="right") - 1
             if np.any((ig < 0) | (ig >= len(g["models"]))):
@@ -203,7 +305,7 @@ for k in range(len(ETA) - 1):
                    lnpt=float(np.average(lpt[m], weights=np.abs(ww))), rows=int(len(m)), n_eff=float(ne),
                    data=dict(Q=Qd.tolist()), models={})
         # statistical error of the data quantiles: binomial in p, through the model density at Q_p
-        fd = np.maximum(mix_pdf(Qd, models["network"]), 1e-9)
+        fd = np.maximum(mix_pdf(Qd, models[NETLAB[0]]), 1e-9)
         eQ = np.sqrt(PQ * (1 - PQ) / ne) / fd
         med, s68 = Qd[4], 0.5 * (Qd[5] - Qd[3])
         rec["data"]["derived"] = derived(Qd).tolist()
@@ -222,16 +324,17 @@ for k in range(len(ETA) - 1):
                                       # of sigma_68, chi2/ndf of the tail-calibration pulls (6 tail levels)
                                       median_bias=float(Qm[4] / med - 1), median_pull=float((Qm[4] - med) / eQ[4]),
                                       width_bias=float(sm / s68 - 1), width_pull=float((sm - s68) / es68),
-                                      tail_chi2=float(np.mean(tp[list(TAILS)] ** 2)))
+                                      tail_chi2=float(np.mean(tp[list(TAILS)] ** 2)),
+                                      wiggles=wiggles(M, y[m], ww))
         cells.append(rec)
     print("|%s| %.2f-%.2f done (%d cells)" % (eta_var, ETA[k], ETA[k + 1], sum(c["eta_bin"] == k for c in cells)),
           flush=True)
 
-labels = ["network"] + [g["label"] for g in GL]
+labels = NETLAB + [g["label"] for g in GL]
 
 # ------------------------------------------------------------------ text summary
-L = ["# quantiles of r: data vs network (%s) and global fit(s), validation rows%s" %
-     (os.path.abspath(a.model), "" if a.files is None else " of --files"),
+L = ["# quantiles of r: data vs network(s) (%s) and global fit(s), validation rows%s" %
+     (", ".join(a.model), "" if a.files is None else " of --files"),
      "# tail calibration: R = (data fraction below the model's Q_p)/p for p < 0.5, (fraction above)/(1-p) else;",
      "# pull = (R - 1)/sigma_R (binomial).  chi2/ndf over the pt cells of each |eta| slice; ~1: calibrated tail",
      ""]
@@ -271,21 +374,53 @@ for k in range(len(ETA) - 1):
             100 * np.average(np.abs(acc["median_bias"]), weights=ne_),
             100 * np.average(np.abs(acc["width_bias"]), weights=ne_), np.mean(acc["tail_chi2"]),
             worst["pt"][0], worst["pt"][1], worst["models"][lab]["tail_chi2"]))
+L += ["", "# likelihood of the networks, row by row on the same rows: n_eff * (lnL - lnL[%s]) per |eta| slice" % NETLAB[0],
+      "# (+- paired statistical error; positive: better than %s), and lnL per event" % NETLAB[0],
+      "%-11s %12s" % ("|eta|", "n_eff") + "".join(" %22s" % l[:22] for l in NETLAB)]
+for key, v in LIK.items():
+    L.append("%-11s %12.4g" % (key, v["n_eff"]) + "".join(
+        " %11.1f +- %7.1f" % (v["nets"][l]["dlnl_neff"], v["nets"][l]["err_neff"]) for l in NETLAB))
+L.append("%-11s %12s" % ("lnL/event", "") + "".join(" %22.6f" % LIK["all"]["nets"][l]["lnl_per_event"] for l in NETLAB))
+L += ["", "# wiggles: secondary maxima of p(r|x) per row (cell mean); bumps of the cell mixtures: all | visible (model",
+      "# rise > 1 sigma) | confirmed by the data (data rise > 2 sigma) | contradicted (data - model < -2 sigma)",
+      "%-11s %-9s %9s %7s %8s %10s %13s" % ("|eta|", "model", "max/row", "bumps", "visible", "confirmed", "contradicted")]
+WIG = {}
+for k in list(range(len(ETA) - 1)) + [-1]:
+    cc = [c for c in cells if c["eta_bin"] == k or k < 0]
+    if not cc:
+        continue
+    key = "%.2f-%.2f" % (ETA[k], ETA[k + 1]) if k >= 0 else "all"
+    for lab in labels:
+        cl = [c for c in cc if lab in c["models"]]
+        if not cl:
+            continue
+        b = np.array([x for c in cl for x in c["models"][lab]["wiggles"]["bumps"]]).reshape(-1, 2)
+        vis = b[:, 0] > 1
+        r_ = dict(maxima_per_row=float(np.mean([c["models"][lab]["wiggles"]["maxima_per_row"] for c in cl])),
+                  bumps=int(len(b)), visible=int(vis.sum()), confirmed=int(np.sum(b[vis, 1] > 2)),
+                  contradicted=int(np.sum(b[vis, 1] - b[vis, 0] < -2)))
+        WIG.setdefault(key, {})[lab] = r_
+        L.append("%-11s %-9s %9.2f %7d %8d %10d %13d" % (key, lab[:9], r_["maxima_per_row"], r_["bumps"], r_["visible"],
+                                                        r_["confirmed"], r_["contradicted"]))
 print("\n".join(L))
 with open(os.path.join(outdir, "quantiles.txt"), "w") as fh:
     fh.write("\n".join(L) + "\n")
 with open(os.path.join(outdir, "quantiles.json"), "w") as fh:
-    json.dump(dict(model=os.path.abspath(a.model), PQ=PQ.tolist(), eta_edges=ETA.tolist(), pt_edges=PT.tolist(),
-                   eta_var=eta_var, cells=cells, summary=summ), fh, indent=1)
+    json.dump(dict(models={l: os.path.abspath(s_.rpartition("=")[2]) for l, s_ in zip(NETLAB, a.model)}, PQ=PQ.tolist(),
+                   eta_edges=ETA.tolist(), pt_edges=PT.tolist(), eta_var=eta_var, cells=cells, summary=summ,
+                   likelihood=LIK, wiggles=WIG), fh, indent=1)
 
 # ------------------------------------------------------------------ plots
 import matplotlib                                                     # noqa: E402
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt                                       # noqa: E402
 
-COL = {"network": "C3"}
+if len(NETLAB) == 1:
+    COL = {NETLAB[0]: "C3"}
+else:                                                  # a scan: ordered colours
+    COL = {l: plt.cm.plasma(x) for l, x in zip(NETLAB, np.linspace(0.05, 0.85, len(NETLAB)))}
 for i, g in enumerate(GL):
-    COL[g["label"]] = "C%d" % (0 if i == 0 else i + 1)
+    COL[g["label"]] = "C%d" % (0 if i == 0 else i + 1) if len(NETLAB) == 1 else "C%d" % (2 * i)
 for k in range(len(ETA) - 1):
     cc = [c for c in cells if c["eta_bin"] == k]
     if not cc:
@@ -320,7 +455,7 @@ for r_, k in enumerate(ks):
     x = np.array([c["lnpt"] for c in cc])
     for col, i in enumerate(TAILS):
         ax = axes[r_, col]
-        e = np.array([c["models"]["network"]["tail_err"][i] for c in cc])
+        e = np.array([c["models"][NETLAB[0]]["tail_err"][i] for c in cc])
         ax.fill_between(x, 1 - e, 1 + e, color="gray", alpha=0.25, lw=0)
         for lab in labels:
             sel = [c for c in cc if lab in c["models"]]
@@ -377,4 +512,40 @@ fig.suptitle("accuracy against the data per cell (colour: significance; pull ~0,
              fontsize=10)
 fig.tight_layout(rect=(0, 0, 1, 0.97))
 fig.savefig(os.path.join(outdir, "accuracy_map.png"), dpi=120); plt.close(fig)
+
+# likelihood of the networks vs model (x: the order of --model), one line per |eta| slice
+keys = [k_ for k_ in LIK if k_ != "all"]
+if len(NETLAB) > 1:
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4.2))
+    xs = np.arange(len(NETLAB))
+    for n, key in enumerate(keys + ["all"]):
+        v = LIK[key]["nets"]
+        dv = np.array([v[l]["dlnl_neff"] for l in NETLAB]); de = np.array([v[l]["err_neff"] for l in NETLAB])
+        ax = axes[1] if key == "all" else axes[0]
+        ax.errorbar(xs + (0.03 * (n - len(keys) / 2) if key != "all" else 0), dv, de, fmt="o-", ms=3, capsize=2,
+                    color="k" if key == "all" else plt.cm.viridis(n / max(len(keys) - 1, 1)), label="|eta| " + key)
+    for ax, t in zip(axes, ("per |%s| slice" % eta_var, "all rows")):
+        ax.axhline(0, color="gray", lw=0.7); ax.set_xticks(xs); ax.set_xticklabels(NETLAB)
+        ax.set_ylabel("n_eff (lnL - lnL[%s])" % NETLAB[0]); ax.set_title(t); ax.grid(alpha=0.3)
+    axes[0].legend(fontsize=7, ncol=2)
+    fig.suptitle("likelihood of the networks on the same validation rows (paired errors)")
+    fig.tight_layout(); fig.savefig(os.path.join(outdir, "likelihood.png"), dpi=115); plt.close(fig)
+
+# wiggles per model and |eta| slice
+fig, axes = plt.subplots(1, 3, figsize=(16, 4.2))
+xs = np.arange(len(labels))
+for n, key in enumerate(keys + ["all"]):
+    if key not in WIG:
+        continue
+    col = "k" if key == "all" else plt.cm.viridis(n / max(len(keys) - 1, 1))
+    for ax, q in zip(axes, ("maxima_per_row", "visible", "contradicted")):
+        ax.plot(xs, [WIG[key].get(l, {}).get(q, np.nan) for l in labels], "o-", ms=3, color=col,
+                lw=2 if key == "all" else 1, label="|eta| " + key)
+for ax, t in zip(axes, ("secondary maxima of p(r|x) per row", "visible bumps (model rise > 1 sigma)",
+                        "bumps contradicted by the data (< -2 sigma)")):
+    ax.set_xticks(xs); ax.set_xticklabels(labels, fontsize=8); ax.set_title(t, fontsize=10); ax.grid(alpha=0.3)
+axes[0].legend(fontsize=7, ncol=2)
+fig.suptitle("tail wiggles per model (bumps confirmed by the data: %s)"
+             % ", ".join("%s %d" % (l, WIG["all"][l]["confirmed"]) for l in labels if l in WIG.get("all", {})), fontsize=10)
+fig.tight_layout(); fig.savefig(os.path.join(outdir, "wiggles.png"), dpi=115); plt.close(fig)
 print("outputs in", outdir)

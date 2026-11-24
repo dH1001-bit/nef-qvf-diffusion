@@ -132,3 +132,61 @@ def balance(x, w, ref, nbins=100, power=1.0):
     gb = np.where(Wb > 0, neff_b ** power / np.maximum(Wb, 1e-300), 0.0)
     g = gb[b]
     return g * aw[ref].sum() / max((g[ref] * aw[ref]).sum(), 1e-300)
+
+
+def tail_reference(X, y, w, ref, nbins=20, min_rows=200, max_sample=5_000_000, seed=0):
+    """Per-row core of the response for the tail monotonicity penalty (jernn.model.mono_penalty):
+    the conditions are cut into cells (``nbins`` quantile bins of every column of X, from the rows
+    ``ref``), and every cell gets the |w|-weighted median and sigma_68 = (Q84 - Q16)/2 of y over its
+    ``ref`` rows (at most ``max_sample`` of them, drawn uniformly).  Cells with fewer than
+    ``min_rows`` rows take the values of all sampled rows.
+
+    Returns center (n,), width (n,) and the cell index (n,) of every row of X (see cell_prob)."""
+    n, d = X.shape
+    rng = np.random.default_rng(seed)
+    cell = np.zeros(n, np.int64)
+    for k in range(d):
+        xk = np.asarray(X[:, k], np.float64)                     # one column at a time (memory)
+        e = np.unique(np.quantile(xk[ref], np.linspace(0, 1, nbins + 1)))
+        b = np.clip(np.searchsorted(e, xk, side="right") - 1, 0, max(len(e) - 2, 0))
+        cell = cell * nbins + b
+    smp = np.asarray(ref)
+    if len(smp) > max_sample:
+        smp = np.sort(rng.choice(smp, max_sample, replace=False))
+    aw = np.abs(np.asarray(w, np.float64))
+
+    def q3(yy, ww):
+        o = np.argsort(yy)
+        c = np.cumsum(ww[o]); c = c / c[-1]
+        i = np.minimum(np.searchsorted(c, [0.16, 0.5, 0.84]), len(yy) - 1)
+        q = yy[o][i]
+        return q[1], max(0.5 * (q[2] - q[0]), 1e-4)
+
+    g_c, g_w = q3(np.asarray(y, np.float64)[smp], aw[smp])
+    uc, inv = np.unique(cell[smp], return_inverse=True)
+    order = np.argsort(inv, kind="stable")
+    bounds = np.searchsorted(inv[order], np.arange(len(uc) + 1))
+    tab_c, tab_w = {}, {}
+    ys, ws = np.asarray(y, np.float64)[smp][order], aw[smp][order]
+    for u, lo, hi in zip(uc, bounds[:-1], bounds[1:]):
+        if hi - lo >= min_rows and ws[lo:hi].sum() > 0:
+            tab_c[u], tab_w[u] = q3(ys[lo:hi], ws[lo:hi])
+    keys = np.array(sorted(tab_c), np.int64)
+    center, width = np.full(n, g_c), np.full(n, g_w)
+    if len(keys):
+        pos = np.clip(np.searchsorted(keys, cell), 0, len(keys) - 1)
+        hit = keys[pos] == cell
+        center[hit] = np.array([tab_c[k] for k in keys])[pos[hit]]
+        width[hit] = np.array([tab_w[k] for k in keys])[pos[hit]]
+    return center, width, cell
+
+
+def cell_prob(cell, rows):
+    """Draw probabilities (len(cell),): zero outside ``rows``, inside proportional to 1 / (rows of the
+    same cell), so that a draw picks every populated cell equally often.  For the monotonicity
+    penalty: an average over the condition space (as the pt average of fit_response_global.py),
+    not over the events, which would leave the sparse corners, where the wiggles are, unchecked."""
+    _, inv = np.unique(cell[rows], return_inverse=True)
+    p = np.zeros(len(cell))
+    p[rows] = 1.0 / np.bincount(inv)[inv]
+    return p / p.sum()

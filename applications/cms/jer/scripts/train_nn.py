@@ -35,6 +35,18 @@ Stability.  A batch with a non-finite loss or gradient is skipped (no update); t
 (--max-skip) or a non-finite validation loss stop the run with a message, best.pt being the last
 good epoch.  The counts are in history.json ("skipped") and summary.txt.
 
+Tail prior.  The Born form builds heavy tails from roots of h near the real axis: dips and
+secondary maxima far out, which the data never confirm (see fit_response_global.py).
+--mono-penalty lambda adds lambda / n_eff(training) * <width int relu(+-d ln p/dy)^2 dy> beyond
+median +- --mono-core sigma_68: zero for monotonically falling tails, plateaus allowed.  The
+median and sigma_68 come from the data per condition cell (--mono-bins quantile bins per
+condition, jernn.data.tail_reference); the average runs over --mono-batch condition rows per step
+drawn uniformly over the cells (every region of the condition space counts the same, as the pt
+average of the global fit).  lambda is in units of n_eff*lnL of all training rows; the global fit's
+lambda is per |eta| bin, so the same strength is about lambda_global x (number of |eta| bins).
+The penalty is monitored on fixed validation conditions in every run (also lambda = 0):
+"mono(val)" in the log, history.json, summary.txt.
+
 Outputs in --outdir: best.pt (lowest validation loss), last.pt, history.json, loss.png,
 summary.txt.  Load with jernn.model.Predictor.load(path).
 """
@@ -47,7 +59,7 @@ import torch                                                         # noqa: E40
 
 from jernn import data as jd                                         # noqa: E402
 from jernn.features import Cut, Feature                              # noqa: E402
-from jernn.model import BornNet, loss_fn, save                       # noqa: E402
+from jernn.model import BornNet, loss_fn, mono_penalty, save         # noqa: E402
 
 ap = argparse.ArgumentParser()
 g = ap.add_argument_group("data")
@@ -70,6 +82,14 @@ g.add_argument("--width", type=int, default=128)
 g.add_argument("--depth", type=int, default=4)
 g.add_argument("--norm-penalty", type=float, default=1e-3, help="holds ||c|| near 1 (gauge)")
 g.add_argument("--ref-penalty", type=float, default=0.0, help="lambda * (|c_1|^2 + |c_2|^2)/||c||^2 (optional gauge)")
+g.add_argument("--mono-penalty", type=float, default=0.0,
+               help="lambda of the tail monotonicity penalty, in units of n_eff*lnL of the training rows (as "
+                    "fit_response_global.py --mono-penalty, there per |eta| bin); 0 = off (still monitored)")
+g.add_argument("--mono-core", type=float, default=2.0, help="the penalty acts beyond median +- this many sigma_68")
+g.add_argument("--mono-points", type=int, default=64, help="grid intervals per tail and row")
+g.add_argument("--mono-batch", type=int, default=2048,
+               help="condition rows per step for the penalty, drawn uniformly over the condition cells")
+g.add_argument("--mono-bins", type=int, default=20, help="quantile bins per condition for the cells (median, sigma_68)")
 g = ap.add_argument_group("training")
 g.add_argument("--sampling", default="weighted", choices=("weighted", "uniform"))
 g.add_argument("--batch", type=int, default=8192)
@@ -139,6 +159,34 @@ if a.sampling == "weighted":
     cdf_t = put(torch.as_tensor(np.cumsum(pw) / pw.sum()))
     sign_t = put(as_t(np.sign(w_fit)))
 
+# tail monotonicity penalty: per-row data core (median, sigma_68 per condition cell), condition rows
+# drawn uniformly over the cells; a fixed validation set of conditions monitors it in every run
+mono_c, mono_w, mono_cell = jd.tail_reference(X, y, D["w"], tr, a.mono_bins, seed=a.seed)
+ne_fit = jd.n_eff(w_fit[tr])
+mono_val = np.random.default_rng(a.seed + 7).choice(len(y), min(8192, len(va)), p=jd.cell_prob(mono_cell, va))
+MV = [as_t(v).to(dev) for v in (X[mono_val], mono_c[mono_val], mono_w[mono_val])]     # monitor (every run)
+if a.mono_penalty > 0:                                   # full-length only when training with the penalty
+    Mc, Mw = put(as_t(mono_c)), put(as_t(mono_w))
+    mono_cdf = put(torch.as_tensor(np.cumsum(jd.cell_prob(mono_cell, tr))))
+del mono_cell
+print("monotonicity penalty: lambda %g (n_eff*lnL units, training n_eff %.4g), beyond median +- %g sigma_68, "
+      "%d points per tail, %d condition rows per step" % (a.mono_penalty, ne_fit, a.mono_core, a.mono_points,
+                                                          a.mono_batch), flush=True)
+
+
+def mono_rows(gen_):
+    u = torch.rand(a.mono_batch, generator=gen_, device=mono_cdf.device, dtype=torch.float64)
+    return torch.clamp(torch.searchsorted(mono_cdf, u), max=len(y) - 1)
+
+
+@torch.no_grad()
+def mono_monitor():
+    model.eval()
+    v = float(mono_penalty(model, *MV, a.mono_core, a.mono_points))
+    model.train()
+    return v
+
+
 opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=a.weight_decay)
 steps = a.steps_per_epoch or max(1, len(tr) // a.batch)
 sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=a.lr, total_steps=a.epochs * steps, pct_start=0.05)
@@ -165,7 +213,8 @@ def validate():
     return -s_lp / s_w
 
 
-hist = dict(epoch=[], train_nll=[], val_nll=[], lr=[], seconds=[], skipped=[])
+hist = dict(epoch=[], train_nll=[], val_nll=[], lr=[], seconds=[], skipped=[], mono_train=[], mono_val=[])
+gen_m = torch.Generator(device=mono_cdf.device).manual_seed(a.seed + 1) if a.mono_penalty > 0 else None
 best, bad, stop_reason = np.inf, 0, None
 info = dict(target=target.spec, conds=[f.spec for f in conds], cuts=[c.spec for c in cuts], data=meta,
             args=vars(a), y_quantiles=[float(q16), float(q50), float(q84)])
@@ -176,7 +225,7 @@ for ep in range(a.epochs):
     te = time.time()
     perm = tr_t[torch.randperm(len(tr), generator=torch.Generator().manual_seed(a.seed + ep)).to(tr_t.device)] \
         if a.sampling == "uniform" else None
-    run, nrun, nskip, ndone = 0.0, 0, 0, 0
+    run, nrun, nskip, ndone, mrun = 0.0, 0, 0, 0, 0.0
     for st in range(steps):
         idx = batch_indices(st, perm)
         if len(idx) == 0:
@@ -184,6 +233,10 @@ for ep in range(a.epochs):
         yy, xx = Yt[idx].to(dev, non_blocking=True), Xt[idx].to(dev, non_blocking=True)
         ww = (sign_t[idx] if a.sampling == "weighted" else Wt[idx]).to(dev, non_blocking=True)
         loss, nll = loss_fn(model, yy, xx, ww, a.norm_penalty, a.ref_penalty)
+        if a.mono_penalty > 0:
+            im = mono_rows(gen_m)
+            pen = mono_penalty(model, Xt[im].to(dev), Mc[im].to(dev), Mw[im].to(dev), a.mono_core, a.mono_points)
+            loss = loss + (a.mono_penalty / ne_fit) * pen
         opt.zero_grad(set_to_none=True)
         ndone += 1
         # guard: one non-finite batch must not reach the weights (an inf loss gives NaN gradients,
@@ -196,6 +249,8 @@ for ep in range(a.epochs):
         if ok:
             opt.step()
             run += float(nll.detach()); nrun += 1
+            if a.mono_penalty > 0:
+                mrun += float(pen.detach())
         else:
             nskip += 1
             if nskip <= 5:
@@ -209,6 +264,8 @@ for ep in range(a.epochs):
     hist["epoch"].append(ep + 1); hist["train_nll"].append(run / max(nrun, 1)); hist["val_nll"].append(v)
     hist["lr"].append(sched.get_last_lr()[0]); hist["seconds"].append(time.time() - te)
     hist["skipped"].append(nskip)
+    hist["mono_train"].append(mrun / max(nrun, 1) if a.mono_penalty > 0 else None)
+    hist["mono_val"].append(mono_monitor())
     if not np.isfinite(v):
         stop_reason = stop_reason or "validation loss not finite in epoch %d" % (ep + 1)
     flag = ""
@@ -217,8 +274,8 @@ for ep in range(a.epochs):
         save(os.path.join(a.outdir, "best.pt"), model, dict(info, epoch=ep + 1, val_nll=v))
     else:
         bad += 1
-    print("epoch %3d  train %.6f  val %.6f  lr %.2e  %5.0f s%s%s"
-          % (ep + 1, hist["train_nll"][-1], v, hist["lr"][-1], hist["seconds"][-1],
+    print("epoch %3d  train %.6f  val %.6f  mono(val) %.4g  lr %.2e  %5.0f s%s%s"
+          % (ep + 1, hist["train_nll"][-1], v, hist["mono_val"][-1], hist["lr"][-1], hist["seconds"][-1],
              "  (%d batches skipped)" % nskip if nskip else "", flag), flush=True)
     with open(os.path.join(a.outdir, "history.json"), "w") as fh:
         json.dump(hist, fh, indent=1)
@@ -240,6 +297,9 @@ L = ["# train_nn.py %s" % " ".join(sys.argv[1:]),
      "parameters %d, J %d, width %d, depth %d" % (sum(p.numel() for p in model.parameters()), a.J, a.width, a.depth),
      "validation nll per unit weight: start %.6f, best %.6f (epoch %d); n_eff(val) * gain = %.1f"
      % (v0, best, (hist["epoch"][int(np.nanargmin(hist["val_nll"]))] if np.isfinite(best) else 0), neff_va * (v0 - best)),
+     "monotonicity penalty: lambda %g; value on the validation conditions at the best epoch %.4g (last %.4g)"
+     % (a.mono_penalty, hist["mono_val"][int(np.nanargmin(hist["val_nll"]))] if np.isfinite(best) else np.nan,
+        hist["mono_val"][-1]),
      "training time %.0f s; %d epochs of %d steps, %d batches skipped (non-finite)%s"
      % (time.time() - t_train, len(hist["epoch"]), steps, sum(hist["skipped"]),
         "; STOPPED: " + stop_reason if stop_reason else "")]

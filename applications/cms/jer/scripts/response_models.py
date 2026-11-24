@@ -197,6 +197,26 @@ class BornModel:
                 gr += self.per_j(g, R, jq, pi * Wt[jq], lq).sum(0)
         return val, gr
 
+    def mono_penalty(self, th, g, T, grad=True):
+        """tail monotonicity penalty sum_i w_i relu(d_i)^2 with d_i = sgn_i (lu(rb_i) - lu(ra_i)):
+        neighbouring r points (ra < rb) at pt index j_i, sgn +1 in the right tail (ln p must not
+        rise with r), -1 in the left tail (must not fall).  The normalisation ||c~||^2 cancels in the
+        difference at one pt.  T: dict(j, ra, rb, sgn, w) from fit_response_global.mono_pairs."""
+        R = self.ref(th, g)
+        la, lb = self.local(R, T["j"], T["ra"]), self.local(R, T["j"], T["rb"])
+        d = T["sgn"] * (lb[0] - la[0])
+        rl = np.maximum(d, 0.0)
+        val = float(T["w"] @ (rl * rl))
+        if not grad:
+            return val, None
+        c = 2 * T["w"] * rl * T["sgn"]
+        on = c != 0
+        if not on.any():
+            return val, np.zeros(self.P)
+        j = T["j"][on]
+        sub = lambda L: tuple(x[on] for x in L)             # noqa: E731
+        return val, (self.per_j(g, R, j, c[on], sub(lb)) - self.per_j(g, R, j, c[on], sub(la))).sum(0)
+
     def scores(self, th, D):
         """per-observation-group scores and their sum w^2, for the sandwich V = sum S2 g g^T:
         every fine 2D bin, and the two tail masses of every pt bin."""

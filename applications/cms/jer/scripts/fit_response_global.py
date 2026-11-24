@@ -23,6 +23,13 @@ Workflow
 3. Fit: L-BFGS with the analytic gradient, warm-started K = 0 -> 1 -> ... -> --K.  Starting
    values: mu from a quadratic fit to the per-pt-bin means, NSC from a fit to the per-pt-bin
    sigma_68^2, c = e_0 (+ 0.01 i in c_1 ... c_J: at real c the gradient in Im c vanishes).
+   Optional tail prior (--mono-penalty lambda): the Born form makes heavy tails from roots of h
+   near the real axis, i.e. dips with secondary maxima that the data never show.  The penalty
+       lambda * < sigma_68 sum_g relu(+-(ln p(r_g+1) - ln p(r_g)))^2 / dr >_pt   ~   lambda < sigma_68 int relu(+-d ln p/dr)^2 dr >
+   on a grid beyond mean +- --mono-core sigma_68 (+ right tail, - left tail) is zero for a tail
+   that falls monotonically, and is subtracted from n_eff*lnL (lambda in those units).  lnL,
+   AIC and the sandwich covariance are reported without it (the covariance of the penalised
+   estimate is then approximate).
 4. Errors: sandwich covariance H^+ V H^+ (H numerical Hessian of l, V = sum S2 g g^T over the
    fine bins, S2 = sum w^2: correct for weighted events), pseudo-inverse because of the flat
    directions (mu, sigma) <-> (c_1, c_2).  Single parameters along those directions are not
@@ -79,6 +86,12 @@ ap.add_argument("--mu-degree", type=int, default=2, help="order of mu_ref(ln pt)
 ap.add_argument("--ref-penalty", type=float, default=0.0,
                 help="lambda * sum_k |b_1k|^2 + |b_2k|^2 per unit weight: removes the flat directions "
                      "(mu, sigma) <-> (c_1, c_2); 0 = off")
+ap.add_argument("--mono-penalty", type=float, default=0.0,
+                help="lambda of the tail monotonicity penalty, in units of n_eff*lnL: subtract "
+                     "lambda * <w_pt int relu(+-d ln p/dr)^2 dr>_pt (pt average) beyond --mono-core; 0 = off")
+ap.add_argument("--mono-core", type=float, default=2.0,
+                help="the penalty acts beyond mean +- this many sigma_68 (smooth start-value curves)")
+ap.add_argument("--mono-dr", type=float, default=0.01, help="r spacing of the penalty grid")
 ap.add_argument("--maxiter", type=int, default=3000)
 ap.add_argument("--ftol", type=float, default=2.2e-9, help="L-BFGS-B relative tolerance on lnL/sum w (scipy default)")
 ap.add_argument("--gtol", type=float, default=1e-5, help="L-BFGS-B projected-gradient tolerance (scipy default)")
@@ -211,15 +224,41 @@ def penalty_vec(mod):
     return np.array(idx, int)
 
 
-def fit(mod, th0, D, lam=0.0):
+def mono_pairs(center, width, kc, step):
+    """neighbouring r points of the monotonicity penalty, per pt index: right tail from
+    center + kc width to the upper r edge (sgn +1), left tail from the lower edge to center - kc width
+    (sgn -1).  Weights width_j / (M step): the penalty is the pt average of
+    width int relu(+-d ln p/dr)^2 dr (dimensionless)."""
+    M = len(center)
+    J_, A_, B_, S_, W_ = [], [], [], [], []
+    for jj in range(M):
+        for lo, hi, sg in ((center[jj] + kc * width[jj], R[-1], 1.0), (R[0], center[jj] - kc * width[jj], -1.0)):
+            if hi - lo < 2 * step:
+                continue
+            g = np.linspace(lo, hi, int(np.ceil((hi - lo) / step)) + 1)
+            n = len(g) - 1
+            J_.append(np.full(n, jj)); A_.append(g[:-1]); B_.append(g[1:]); S_.append(np.full(n, sg))
+            W_.append(np.full(n, width[jj] / (M * (g[1] - g[0]))))
+    cat = lambda L: np.concatenate(L) if L else np.zeros(0)      # noqa: E731
+    return dict(j=cat(J_).astype(int), ra=cat(A_), rb=cat(B_), sgn=cat(S_), w=cat(W_))
+
+
+def fit(mod, th0, D, lam=0.0, mono=0.0):
+    """minimise -lnL/sum w (+ the reference penalty lam, + mono * monotonicity penalty / n_eff, so
+    that mono is in units of n_eff*lnL; needs D['mono'] from mono_pairs)."""
     Wsum = D["Wtot"].sum()
+    ne_ = Wsum ** 2 / D["W2tot"].sum()
     pen = penalty_vec(mod) if lam > 0 else np.array([], int)
+    use_mono = mono > 0 and "mono" in D and len(D["mono"]["j"]) > 0
 
     def f(th):
         v, g = mod.lnl(th, D)
         f_, g_ = -v / Wsum, -g / Wsum
         if lam > 0:
             f_ += lam * np.sum(th[pen] ** 2); g_ = g_.copy(); g_[pen] += 2 * lam * th[pen]
+        if use_mono:
+            pv, pg = mod.mono_penalty(th, D["grid"], D["mono"])
+            f_ += mono * pv / ne_; g_ = g_ + mono * pg / ne_
         return f_, g_
 
     res = minimize(f, th0, jac=True, method="L-BFGS-B", options=dict(maxiter=a.maxiter, maxfun=4 * a.maxiter,
@@ -326,18 +365,28 @@ for ie in eta_list:
     th = mod0.pack(m0, sp0, Bc)
     print("start: mu Legendre %s, NSC A %.3g B %.3g C %.3g" % (np.round(m0, 4), *sp0))
 
-    # --- warm-started fits K = 0 ... Kmax
+    # --- tail monotonicity penalty: grid beyond mean +- mono_core sigma_68 of the smooth start curves
     D["grid"] = Grid(mod0, D["pt"])
+    if a.mono_penalty > 0:
+        gq = D["grid"]
+        w68 = np.sqrt(np.maximum(A0 * gq.t ** 2 + B20 * gq.t + C20, (2 * dr) ** 2))
+        D["mono"] = mono_pairs(gq.Lmu @ m0, w68, a.mono_core, a.mono_dr)
+        print("monotonicity penalty: lambda %g, beyond mean +- %g sigma_68, %d point pairs"
+              % (a.mono_penalty, a.mono_core, len(D["mono"]["j"])))
+
+    # --- warm-started fits K = 0 ... Kmax
     mod, stages = mod0, []
     for K in range(Ks[ie] + 1):
         if K > 0:
             mod, th = mod.extend(th, K)
         D["grid"] = Grid(mod, D["pt"])
         t0 = time.time()
-        th, lnl, conv, nit = fit(mod, th, D, a.ref_penalty)
-        stages.append(dict(K=K, model=mod, theta=th.copy(), lnl=lnl, conv=conv, P=mod.P))
-        print("  K = %d: P = %2d, lnL/sum w = %.6f, n_eff*lnL/sum w = %.1f, %s after %d it, %.0f s"
-              % (K, mod.P, lnl / W_all, ne * lnl / W_all, "converged" if conv else "NOT converged", nit, time.time() - t0))
+        th, lnl, conv, nit = fit(mod, th, D, a.ref_penalty, a.mono_penalty)
+        mpen = mod.mono_penalty(th, D["grid"], D["mono"], grad=False)[0] if "mono" in D else None
+        stages.append(dict(K=K, model=mod, theta=th.copy(), lnl=lnl, conv=conv, P=mod.P, mono=mpen))
+        print("  K = %d: P = %2d, lnL/sum w = %.6f, n_eff*lnL/sum w = %.1f, %s after %d it, %.0f s%s"
+              % (K, mod.P, lnl / W_all, ne * lnl / W_all, "converged" if conv else "NOT converged", nit, time.time() - t0,
+                 "" if mpen is None else ", monotonicity penalty %.4g (x lambda: %.1f)" % (mpen, a.mono_penalty * mpen)))
     cov, nflat = sandwich(mod, th, D)
     print("  sandwich covariance: %d flat direction(s) of the Hessian" % nflat)
 
@@ -375,6 +424,7 @@ for ie in eta_list:
         eta_bin=int(ie), abs_eta=[float(ETA[ie]), float(ETA[ie + 1])], n_eff=ne, sum_w=W_all,
         pt_range=[float(D["pt"].min()), float(D["pt"].max())], model=fin["model"].to_dict(fin["theta"]),
         cov=cov.tolist(), flat_directions=nflat, lnL=fin["lnl"], converged=fin["conv"],
+        mono=dict(penalty=a.mono_penalty, core=a.mono_core, dr=a.mono_dr, value=fin["mono"]),
         stages=[dict(K=s["K"], P=s["P"], lnL=s["lnl"], converged=s["conv"], model=s["model"].to_dict(s["theta"]))
                 for s in stages],
         cells=[dict(pt_gen=c["pt"], lnL=c["lnl"], converged=c["conv"], model=c["model"].to_dict(c["theta"]))
